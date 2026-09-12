@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 15px; width: 300px; }
+    label { display: block; margin-top: 10px; font-weight: bold; }
+    input { width: 100%; padding: 8px; margin-top: 5px; box-sizing: border-box; }
+    button { margin-top: 15px; width: 100%; padding: 10px; background-color: #007bff; color: white; border: none; cursor: pointer; }
+    button:hover { background-color: #0056b3; }
+    #status { margin-top: 10px; color: green; font-size: 0.9em; display: none; }
+  </style>
+</head>
+<body>
+  <h2>Configuración VoiceNav</h2>
+  
+  <label for="llmKey">API Key (Grok/Gemini):</label>
+  <input type="password" id="llmKey" placeholder="Ingresa tu clave">
+
+  <label for="elevenKey">API Key (ElevenLabs):</label>
+  <input type="password" id="elevenKey" placeholder="Ingresa tu clave">
+
+  <button id="saveBtn">Guardar Claves</button>
+  <div id="status">¡Claves guardadas!</div>
+
+  <script src="ui.js"></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "VoiceNav Accesibilidad",
+  "version": "1.0",
+  "description": "Navegación e interacción web por voz para usuarios con discapacidad visual.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "action": {
+    "default_popup": "popup/index.html",
+    "default_title": "Configurar VoiceNav"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "content/dom-parser.js",
+        "content/tts.js",
+        "content/stt.js",
+        "content/main.js"
+      ]
+    }
+  ]
+}
