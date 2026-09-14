@@ -1,27 +1,46 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NRVI</title>
   <style>
-    body { font-family: Arial, sans-serif; padding: 15px; width: 300px; }
-    label { display: block; margin-top: 10px; font-weight: bold; }
-    input { width: 100%; padding: 8px; margin-top: 5px; box-sizing: border-box; }
-    button { margin-top: 15px; width: 100%; padding: 10px; background-color: #007bff; color: white; border: none; cursor: pointer; }
-    button:hover { background-color: #0056b3; }
-    #status { margin-top: 10px; color: green; font-size: 0.9em; display: none; }
+    :root { color-scheme: light; font-family: system-ui, sans-serif; }
+    body { width: 340px; margin: 0; padding: 18px; color: #17212b; background: #f4f1ea; }
+    h1 { margin: 0 0 4px; font-size: 24px; }
+    p { line-height: 1.4; }
+    label { display: block; margin-top: 14px; font-weight: 700; }
+    input, textarea, button { width: 100%; box-sizing: border-box; font: inherit; }
+    input, textarea { margin-top: 6px; padding: 10px; border: 1px solid #b8b1a5; border-radius: 6px; background: #fffdf8; }
+    textarea { min-height: 82px; resize: vertical; }
+    button { margin-top: 12px; padding: 10px; border: 0; border-radius: 6px; color: white; background: #155e75; cursor: pointer; font-weight: 700; }
+    button:hover { background: #0e7490; }
+    .secondary { background: #475569; }
+    .hint { color: #5b6570; font-size: 13px; }
+    .result { min-height: 54px; padding: 10px; border-left: 4px solid #155e75; background: #fffdf8; white-space: pre-wrap; }
+    section { margin-top: 18px; border-top: 1px solid #d4cec3; padding-top: 14px; }
   </style>
 </head>
 <body>
-  <h2>Configuración VoiceNav</h2>
-  
-  <label for="llmKey">API Key (Grok/Gemini):</label>
-  <input type="password" id="llmKey" placeholder="Ingresa tu clave">
+  <h1>NRVI</h1>
+  <p class="hint">Tu acompañante para entender y usar la página actual.</p>
 
-  <label for="elevenKey">API Key (ElevenLabs):</label>
-  <input type="password" id="elevenKey" placeholder="Ingresa tu clave">
+  <section>
+    <h2>Conexión</h2>
+    <label for="backendUrl">URL del backend</label>
+    <input id="backendUrl" type="url" placeholder="http://localhost:3000">
+    <button id="save">Guardar conexión</button>
+    <p id="connectionStatus" class="hint">El backend mantiene las API keys fuera de la extensión.</p>
+  </section>
 
-  <button id="saveBtn">Guardar Claves</button>
-  <div id="status">¡Claves guardadas!</div>
+  <section>
+    <h2>Prueba de texto</h2>
+    <label for="question">Habla con NRVI</label>
+    <textarea id="question" placeholder="¿De qué trata esta página? ¿Dónde inicio sesión?"></textarea>
+    <button id="ask">Preguntar</button>
+    <button id="listen" class="secondary">Activar voz</button>
+    <p id="answer" class="result" aria-live="polite">Escribe una pregunta para probar el agente.</p>
+  </section>
 
   <script src="ui.js"></script>
 </body>

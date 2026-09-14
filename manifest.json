@@ -1,32 +1,24 @@
 {
   "manifest_version": 3,
-  "name": "VoiceNav Accesibilidad",
-  "version": "1.0",
-  "description": "Navegación e interacción web por voz para usuarios con discapacidad visual.",
-  "permissions": [
-    "activeTab",
-    "storage",
-    "scripting"
-  ],
-  "host_permissions": [
-    "<all_urls>"
-  ],
-  "background": {
-    "service_worker": "background/service-worker.js"
-  },
+  "name": "NRVI - Agente web accesible",
+  "version": "0.1.0",
+  "description": "Agente conversacional que explica y ayuda a interactuar con páginas web.",
+  "permissions": ["activeTab", "storage", "tabs"],
+  "host_permissions": ["http://localhost:3000/*"],
+  "background": { "service_worker": "background/service-worker.js", "type": "module" },
   "action": {
-    "default_popup": "popup/index.html",
-    "default_title": "Configurar VoiceNav"
+    "default_title": "Hablar con NRVI",
+    "default_popup": "popup/index.html"
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": [
-        "content/dom-parser.js",
-        "content/tts.js",
-        "content/stt.js",
-        "content/main.js"
-      ]
+  "commands": {
+    "toggle-listening": {
+      "suggested_key": { "default": "Alt+Shift+V" },
+      "description": "Activar o detener la escucha de NRVI"
     }
-  ]
+  },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["content/context.js", "content/voice.js", "content/agent.js"],
+    "run_at": "document_idle"
+  }]
 }
