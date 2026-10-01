@@ -40,12 +40,7 @@
       response.actions?.forEach(runAction);
       history.push({ role: 'user', content: question }, { role: 'assistant', content: response.text });
       if (history.length > 12) history.splice(0, 2);
-      if (response.audio) {
-        const audio = new Audio(`data:${response.audioMimeType || 'audio/mpeg'};base64,${response.audio}`);
-        audio.play().catch(() => window.nrviVoice.speak(response.text));
-      } else {
-        window.nrviVoice.speak(response.text);
-      }
+      window.nrviVoice.playResponse(response.text, response.audio, response.audioMimeType);
       done?.({ ok: true, text: response.text });
     });
   };
@@ -60,3 +55,6 @@
     if (message.type === 'voice.toggle') window.nrviVoice.toggle();
   });
 })();
+
+
+//.

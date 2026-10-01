@@ -1,0 +1,15 @@
+Hay varios puntos que impiden considerarlo totalmente robusto:
+
+El reconocimiento de voz no es universal: depende de SpeechRecognition, principalmente 
+disponible en Chrome/Chromium.
+
+recognition.start() no está dentro de try/catch; puede fallar si el permiso fue rechazado, 
+ya existe una sesión activa o el navegador bloquea el micrófono.
+
+No se muestra claramente en el popup si está escuchando, detenido o si ocurrió un error.
+
+El audio de ElevenLabs se reproduce después de una petición de red y puede ser bloqueado 
+por autoplay; entonces usa speechSynthesis como fallback.
+
+Las acciones del agente pueden desincronizarse: el contexto limita botones y campos a cierta cantidad, pero runAction vuelve a consultar todos los elementos sin aplicar exactamente los mismos filtros.
+No hay pruebas automatizadas ni una comprobación de salud del backend desde el popup.

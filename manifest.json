@@ -3,7 +3,7 @@
   "name": "NRVI - Agente web accesible",
   "version": "0.1.0",
   "description": "Agente conversacional que explica y ayuda a interactuar con páginas web.",
-  "permissions": ["activeTab", "storage", "tabs"],
+  "permissions": ["activeTab", "storage", "tabs", "scripting"],
   "host_permissions": ["http://localhost:3000/*"],
   "background": { "service_worker": "background/service-worker.js", "type": "module" },
   "action": {

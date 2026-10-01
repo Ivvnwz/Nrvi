@@ -1,0 +1,105 @@
+1. Control de la respuesta hablada
+
+“Detente”, “para”, “cállate”, “silencio”
+Detener inmediatamente la reproducción.
+“Pausa”
+Pausar la respuesta actual.
+“Reanuda”, “continúa”, “sigue hablando”
+Continuar desde donde se pausó.
+“Repite”, “otra vez”, “vuelve a explicarlo”
+Reproducir la última respuesta completa.
+“Explícalo de nuevo más despacio”
+Repetir con velocidad reducida.
+“Resúmelo”
+Pedir una versión breve de la última respuesta.
+“Explícalo más simple”
+Solicitar una explicación menos técnica.
+“¿Qué dijiste?”
+Repetir la última respuesta.
+“Cancela”
+Detener audio y cancelar cualquier solicitud pendiente.
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+2. Control de escucha
+“Escucha”, “actívate”, “comienza a escuchar”
+Activar el micrófono.
+“Deja de escuchar”, “termina”, “no escuches más”
+Detener el reconocimiento.
+“Espera”
+Detener temporalmente la escucha sin cancelar el contexto.
+Silencio prolongado
+Cerrar automáticamente el reconocimiento después de un tiempo.
+Activar mientras ya está escuchando
+No crear otra instancia; mantener la sesión actual.
+Detener cuando no existe una sesión activa
+No lanzar error.
+Hablar mientras NRVI responde
+Detener o pausar automáticamente el audio y escuchar al usuario.
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+3. Errores del micrófono
+Permiso rechazado.
+Micrófono ocupado por otra aplicación.
+Navegador sin SpeechRecognition.
+Error de red durante el reconocimiento.
+Audio demasiado bajo o inaudible.
+Usuario no habla.
+Resultado vacío o incompleto.
+recognition.start() falla porque ya había una sesión activa.
+El usuario cambia de pestaña o cierra la página.
+El contenido no permite scripts, por ejemplo páginas internas de Chrome.
+En esos casos NRVI debería responder con mensajes claros como:
+
+-“No tengo permiso para usar el micrófono.”
+-“No entendí lo que dijiste. Puedes repetirlo.”
+-“No detecté voz.”
+-“El reconocimiento de voz no está disponible en este navegador.”
+-“Se perdió la conexión con el agente.”
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+4. Errores del backend
+Backend apagado.
+GROQ_API_KEY ausente.
+ElevenLabs no configurado.
+Error de Groq o ElevenLabs.
+Tiempo de espera agotado.
+Respuesta vacía.
+Audio remoto bloqueado por autoplay.
+Solicitud duplicada mientras la anterior sigue procesándose.
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+5.La extensión debería poder mostrar o decir:
+“No pude conectar con NRVI.”
+“La respuesta llegó sin audio; usaré la voz del navegador.”
+“Todavía estoy procesando la pregunta anterior.”
+“La respuesta tardó demasiado. Inténtalo de nuevo.”
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+idle              Sin escuchar ni hablar
+listening         Escuchando al usuario
+processing        Procesando la pregunta
+speaking          Reproduciendo una respuesta
+paused            Respuesta pausada
+error             Ocurrió un error
+
+PRIORIDADES
+1. detener, pausa, cancela
+2. reanuda, continúa
+3. repite, explica otra vez
+4. Pregunta normal al agente
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+Detalle importante
+Hay un detalle importante en la implementación actual: speechSynthesis puede pausarse y reanudarse, 
+pero el audio de ElevenLabs se crea como un objeto local con new Audio(...). Para soportar pausa, 
+reanudación y detención correctamente habría que guardar ese objeto como currentAudio y controlar 
+ambos sistemas con una misma interfaz:
+
+stopSpeaking();
+pauseSpeaking();
+resumeSpeaking();
+repeatLastResponse();
