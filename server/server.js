@@ -1,9 +1,13 @@
 import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
+import { cleanModel, safeActions, buildMessages, fetchWithTimeout, DEFAULT_MODEL } from './lib.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
+const groqTimeout = Number(process.env.GROQ_TIMEOUT_MS || 20000);
+const elevenTimeout = Number(process.env.ELEVENLABS_TIMEOUT_MS || 15000);
+
 const tools = [
   {
     type: 'function',
@@ -39,7 +43,8 @@ const tools = [
   }
 ];
 
-app.use(cors({ origin: true }));
+const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',').map(value => value.trim()).filter(Boolean);
+app.use(cors({ origin: allowedOrigins?.length ? allowedOrigins : true }));
 app.use(express.json({ limit: '2mb' }));
 
 const systemPrompt = `Eres NRVI, una asistente amigable, empática y conversacional para una persona con discapacidad visual.
@@ -48,79 +53,84 @@ Puedes resumir, conversar y guiar. Solo usa herramientas con IDs presentes en el
 No inventes controles. Para comprar, borrar, enviar formularios o acciones irreversibles, explica lo que ocurrirá y pide confirmación antes de actuar.`;
 
 async function chat(messages, useTools = true) {
- 
-  const rawModel = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
-  const cleanModel = rawModel.replace(/[`"'\s]/g, '');
+  const model = cleanModel(process.env.GROQ_MODEL || DEFAULT_MODEL);
 
-  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: { 
-      'Content-Type': 'application/json', 
-      Authorization: `Bearer ${process.env.GROQ_API_KEY?.trim()}` 
-    },
-    body: JSON.stringify({
-      model: cleanModel,
-      temperature: 0.25,
-      messages,
-      ...(useTools ? { tools, tool_choice: 'auto' } : {})
-    })
-  });
+  let response;
+  try {
+    response = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.GROQ_API_KEY?.trim()}`
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.25,
+        messages,
+        ...(useTools ? { tools, tool_choice: 'auto' } : {})
+      })
+    }, groqTimeout);
+  } catch (error) {
+    throw new Error(error.name === 'AbortError' ? 'Groq tardó demasiado en responder.' : 'No se pudo contactar con Groq.');
+  }
 
-  const data = await response.json();
+  let data = {};
+  try {
+    data = await response.json();
+  } catch {
+    data = {};
+  }
   if (!response.ok) throw new Error(data.error?.message || 'Groq rechazó la solicitud.');
   return data.choices?.[0]?.message || {};
-}
-
-function safeActions(toolCalls = []) {
-  const allowed = new Set(['click_element', 'focus_field', 'fill_input', 'scroll_page']);
-  return toolCalls.flatMap(call => {
-    if (!allowed.has(call.function?.name)) return [];
-    try {
-      return [{ type: call.function.name, ...JSON.parse(call.function.arguments || '{}') }];
-    } catch {
-      return [];
-    }
-  });
 }
 
 async function elevenLabs(text) {
   if (!process.env.ELEVENLABS_API_KEY || !text) return null;
   const voice = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
-  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'xi-api-key': process.env.ELEVENLABS_API_KEY, Accept: 'audio/mpeg' },
-    body: JSON.stringify({ text, model_id: 'eleven_multilingual_v2' })
-  });
-  if (!response.ok) return null;
-  return Buffer.from(await response.arrayBuffer()).toString('base64');
+  try {
+    const response = await fetchWithTimeout(`https://api.elevenlabs.io/v1/text-to-speech/${voice}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'xi-api-key': process.env.ELEVENLABS_API_KEY, Accept: 'audio/mpeg' },
+      body: JSON.stringify({ text, model_id: 'eleven_multilingual_v2' })
+    }, elevenTimeout);
+    if (!response.ok) return null;
+    return Buffer.from(await response.arrayBuffer()).toString('base64');
+  } catch {
+    return null;
+  }
 }
 
-app.get('/health', (_request, response) => response.json({ ok: true, groq: Boolean(process.env.GROQ_API_KEY), elevenlabs: Boolean(process.env.ELEVENLABS_API_KEY) }));
+app.get('/health', (_request, response) => response.json({
+  ok: true,
+  groq: Boolean(process.env.GROQ_API_KEY),
+  elevenlabs: Boolean(process.env.ELEVENLABS_API_KEY)
+}));
 
 app.post('/api/agent', async (request, response) => {
-  const { question, context, history = [], audio = true } = request.body || {};
+  const body = request.body || {};
+  const { question, context, history = [], audio = true } = body;
+
   if (!process.env.GROQ_API_KEY) return response.status(503).json({ error: 'Configura GROQ_API_KEY en server/.env.' });
-  if (!question?.trim()) return response.status(400).json({ error: 'La pregunta está vacía.' });
+  if (typeof question !== 'string' || !question.trim()) return response.status(400).json({ error: 'La pregunta está vacía.' });
 
   try {
-    const messages = [
-      { role: 'system', content: systemPrompt },
-      ...history.slice(-10),
-      { role: 'user', content: `Contexto actual de la página:\n${JSON.stringify(context || {})}\n\nUsuario: ${question.trim()}` }
-    ];
+    const messages = buildMessages({ systemPrompt, history, context, question });
     const first = await chat(messages);
     let actions = [];
     let final = first;
+
     if (first.tool_calls?.length) {
       actions = safeActions(first.tool_calls);
       messages.push(first);
       first.tool_calls.forEach(call => messages.push({ role: 'tool', tool_call_id: call.id, content: 'Acción preparada para ejecutarse en la página.' }));
       final = await chat(messages, false);
     }
+
     const text = final.content?.trim() || 'He preparado la acción solicitada.';
     const audioBase64 = audio ? await elevenLabs(text) : null;
     response.json({ text, actions, audio: audioBase64, audioMimeType: audioBase64 ? 'audio/mpeg' : null });
   } catch (error) {
+    console.error('NRVI agent error:', error.message);
     response.status(502).json({ error: error.message || 'Error del agente.' });
   }
 });
