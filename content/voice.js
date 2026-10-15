@@ -23,6 +23,10 @@
   let processing = false;
   let currentAudio;
   let lastResponse;
+  let recognitionGeneration = 0;
+  let restartTimer;
+  let pendingMode;
+  let promptComplete = true;
 
   const normalize = text => String(text || '')
     .toLocaleLowerCase('es-ES')
@@ -37,7 +41,6 @@
       currentAudio.currentTime = 0;
       currentAudio = null;
     }
-    lastResponse = null;
   };
 
   const pauseSpeaking = () => {
@@ -50,18 +53,21 @@
     if (currentAudio?.paused) currentAudio.play().catch(() => speak(lastResponse?.text));
   };
 
-  const playResponse = (text, audioBase64, audioMimeType = 'audio/mpeg') => {
+  const playResponse = (text, audioBase64, audioMimeType = 'audio/mpeg', onend) => {
     stopSpeaking();
     lastResponse = { text, audioBase64, audioMimeType };
     if (!audioBase64) {
-      speak(text);
+      speak(text, onend);
       return;
     }
     currentAudio = new Audio(`data:${audioMimeType};base64,${audioBase64}`);
-    currentAudio.onended = () => { currentAudio = null; };
+    currentAudio.onended = () => {
+      currentAudio = null;
+      onend?.();
+    };
     currentAudio.play().catch(() => {
       currentAudio = null;
-      speak(text);
+      speak(text, onend);
     });
   };
 
@@ -82,59 +88,107 @@
     return false;
   };
 
+  const scheduleWakeRecognition = () => {
+    clearTimeout(restartTimer);
+    if (!wakeWordEnabled || processing || recognition || mode !== 'wake') return;
+    restartTimer = setTimeout(() => {
+      restartTimer = null;
+      startRecognition('wake');
+    }, 350);
+  };
+
+  const requestRecognition = nextMode => {
+    pendingMode = nextMode;
+    if (!recognition && !processing && promptComplete) {
+      const requestedMode = pendingMode;
+      pendingMode = null;
+      startRecognition(requestedMode);
+    }
+  };
+
+  const startPendingRecognition = () => {
+    if (!pendingMode || recognition || processing || !promptComplete) return;
+    const requestedMode = pendingMode;
+    pendingMode = null;
+    startRecognition(requestedMode);
+  };
+
   const startRecognition = nextMode => {
-    if (!recognitionType || processing) return;
-    if (recognition) recognition.abort();
+    if (!recognitionType || processing || recognition) return;
+    clearTimeout(restartTimer);
     mode = nextMode;
-    recognition = new recognitionType();
-    recognition.lang = 'es-ES';
-    recognition.continuous = nextMode === 'wake';
-    recognition.interimResults = false;
-    recognition.onstart = () => { active = true; };
-    recognition.onend = () => {
-      active = false;
+    const generation = ++recognitionGeneration;
+    const instance = new recognitionType();
+    recognition = instance;
+    instance.lang = 'es-ES';
+    instance.continuous = nextMode === 'wake';
+    instance.interimResults = false;
+    instance.onstart = () => {
+      if (recognition !== instance || generation !== recognitionGeneration) return;
+      active = true;
+    };
+    instance.onend = () => {
+      if (recognition !== instance || generation !== recognitionGeneration) return;
       recognition = null;
-      if (wakeWordEnabled && mode === 'wake' && !processing) {
-        setTimeout(() => startRecognition('wake'), 300);
+      active = false;
+      if (pendingMode) {
+        startPendingRecognition();
+      } else if (wakeWordEnabled && mode === 'wake' && !processing) {
+        scheduleWakeRecognition();
       }
     };
-    recognition.onerror = event => {
+    instance.onerror = event => {
+      if (recognition !== instance || generation !== recognitionGeneration) return;
       active = false;
       if (['not-allowed', 'service-not-allowed', 'audio-capture'].includes(event.error)) {
         wakeWordEnabled = false;
+        pendingMode = null;
         mode = 'off';
-        speak('No tengo permiso para usar el micrófono.');
+        speak(event.error === 'audio-capture'
+          ? 'No pude acceder al micrófono.'
+          : 'No tengo permiso para usar el micrófono.');
+      } else if (event.error === 'no-speech' && nextMode === 'question') {
+        speak('No detecté voz. Di Navi para intentarlo de nuevo.');
+      } else if (event.error === 'network') {
+        speak('Se perdió la conexión con el reconocimiento de voz.');
       }
     };
-    recognition.onresult = event => {
+    instance.onresult = event => {
+      if (recognition !== instance || generation !== recognitionGeneration) return;
       const transcript = event.results[event.results.length - 1]?.[0]?.transcript?.trim();
       if (!transcript) return;
 
-      if (mode === 'wake') {
+      if (nextMode === 'wake') {
         if (handlePlaybackCommand(transcript)) return;
         const normalized = normalize(transcript);
         const wakeIndex = normalized.indexOf(WAKE_WORD);
         if (wakeIndex < 0) return;
-        const question = transcript.slice(wakeIndex + WAKE_WORD.length).trim();
-        recognition.stop();
-        if (question) {
-          askQuestion(question);
-        } else {
-          mode = 'question';
-          speak('Dime, ¿en qué puedo ayudarte?', () => {
-            if (wakeWordEnabled && !processing) startRecognition('question');
-          });
-        }
+        mode = 'prompting';
+        pendingMode = 'question';
+        promptComplete = false;
+        instance.stop();
+        speak('Dime, ¿en qué puedo ayudarte?', () => {
+          promptComplete = true;
+          startPendingRecognition();
+        });
         return;
       }
 
-      recognition.stop();
+      instance.stop();
       askQuestion(transcript);
     };
     try {
-      recognition.start();
+      instance.start();
     } catch (error) {
-      if (error.name !== 'InvalidStateError') speak('No pude iniciar el micrófono.');
+      if (recognition === instance) {
+        recognition = null;
+        active = false;
+      }
+      if (error.name !== 'InvalidStateError') {
+        speak('No pude iniciar el micrófono.');
+      } else if (nextMode === 'wake' && wakeWordEnabled && !processing) {
+        scheduleWakeRecognition();
+      }
     }
   };
 
@@ -143,13 +197,16 @@
     mode = 'off';
     window.nrviAsk?.(question, () => {
       processing = false;
-      if (wakeWordEnabled) startRecognition('wake');
+      if (wakeWordEnabled) requestRecognition('wake');
     });
   };
 
   const stopWakeWord = () => {
     wakeWordEnabled = false;
     mode = 'off';
+    pendingMode = null;
+    promptComplete = true;
+    clearTimeout(restartTimer);
     if (recognition) {
       recognition.onend = null;
       recognition.abort();
@@ -169,7 +226,7 @@
       return false;
     }
     wakeWordEnabled = true;
-    startRecognition('wake');
+    requestRecognition('wake');
     return true;
   };
 
@@ -191,6 +248,10 @@
   };
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === 'voice.getStatus') {
+      sendResponse({ ok: true, enabled: wakeWordEnabled, active, mode });
+      return false;
+    }
     if (message.type !== 'voice.setWakeWord') return false;
     sendResponse({ ok: true, enabled: setWakeWord(Boolean(message.enabled)) });
     return false;

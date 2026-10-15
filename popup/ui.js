@@ -5,21 +5,41 @@ document.addEventListener('DOMContentLoaded', async () => {
   const connectionStatus = document.getElementById('connectionStatus');
   const voiceButton = document.getElementById('listen');
   const voiceStatus = document.getElementById('voiceStatus');
+  const voiceState = document.getElementById('voiceState');
   const defaultBackend = 'http://localhost:3000';
 
   const { backendUrl, wakeWordEnabled = true } = await chrome.storage.local.get(['backendUrl', 'wakeWordEnabled']);
   backendUrlInput.value = backendUrl || defaultBackend;
 
   const renderVoiceState = enabled => {
-    voiceButton.textContent = enabled ? 'Desactivar comando "Navi"' : 'Activar comando "Navi"';
+    voiceButton.textContent = enabled ? 'Detener llamada' : 'Iniciar llamada';
     voiceButton.setAttribute('aria-pressed', String(enabled));
+    voiceState.textContent = enabled ? 'Activo' : 'Inactivo';
     voiceStatus.textContent = enabled
       ? 'Comando "Navi" activo en la pestaña actual.'
       : 'El comando "Navi" está desactivado.';
   };
 
+  const renderVoiceStatus = status => {
+    if (!status?.ok) return;
+    voiceButton.setAttribute('aria-pressed', String(status.enabled));
+    voiceButton.textContent = status.enabled ? 'Detener llamada' : 'Iniciar llamada';
+    voiceState.textContent = status.active ? 'Escuchando' : status.enabled ? 'Preparando' : 'Inactivo';
+    voiceStatus.textContent = status.enabled
+      ? status.active
+        ? 'Micrófono activo. Di «Navi» para comenzar.'
+        : 'Comando "Navi" activo en la pestaña actual.'
+      : 'El comando "Navi" está desactivado.';
+  };
+
   const sendWakeWordCommand = (tabId, enabled) => new Promise(resolve => {
     chrome.tabs.sendMessage(tabId, { type: 'voice.setWakeWord', enabled }, response => {
+      resolve({ response, error: chrome.runtime.lastError });
+    });
+  });
+
+  const getVoiceStatus = tabId => new Promise(resolve => {
+    chrome.tabs.sendMessage(tabId, { type: 'voice.getStatus' }, response => {
       resolve({ response, error: chrome.runtime.lastError });
     });
   });
@@ -42,10 +62,33 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   renderVoiceState(wakeWordEnabled);
 
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (activeTab?.id) {
+    const status = await getVoiceStatus(activeTab.id);
+    if (!status.error) renderVoiceStatus(status.response);
+  }
+
   document.getElementById('save').addEventListener('click', async () => {
     const value = backendUrlInput.value.trim().replace(/\/$/, '');
     await chrome.storage.local.set({ backendUrl: value || defaultBackend });
     connectionStatus.textContent = `Conexión guardada: ${value || defaultBackend}`;
+  });
+
+  document.getElementById('test').addEventListener('click', async () => {
+    const url = backendUrlInput.value.trim().replace(/\/$/, '') || defaultBackend;
+    connectionStatus.textContent = 'Probando conexión...';
+    try {
+      const response = await fetch(`${url}/health`);
+      if (!response.ok) {
+        throw new Error(`El backend respondió ${response.status}.`);
+      }
+      const health = await response.json();
+      connectionStatus.textContent = `Backend ok | groq=${health.groq ? 'si' : 'no'} | elevenlabs=${health.elevenlabs ? 'si' : 'no'}`;
+    } catch (error) {
+      connectionStatus.textContent = error instanceof Error
+        ? `No se pudo conectar: ${error.message}`
+        : 'No se pudo conectar con el backend.';
+    }
   });
 
   document.getElementById('ask').addEventListener('click', async () => {
@@ -87,5 +130,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
     renderVoiceState(result.response.enabled);
+    const status = await getVoiceStatus(tab.id);
+    if (!status.error) renderVoiceStatus(status.response);
   });
 });

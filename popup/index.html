@@ -5,42 +5,130 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NRVI</title>
   <style>
-    :root { color-scheme: light; font-family: system-ui, sans-serif; }
-    body { width: 340px; margin: 0; padding: 18px; color: #17212b; background: #f4f1ea; }
-    h1 { margin: 0 0 4px; font-size: 24px; }
-    p { line-height: 1.4; }
-    label { display: block; margin-top: 14px; font-weight: 700; }
+    :root {
+      color-scheme: light;
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+    }
+    body {
+      width: 380px;
+      margin: 0;
+      padding: 10px 20px 8px;
+      box-sizing: border-box;
+      color: #17212b;
+      background: #f4f1ea;
+    }
+    h1 { display: none; }
+    h2 { margin: 0 0 12px; font-size: 16px; }
+    p { line-height: 1.35; }
+    label { display: block; margin: 0 0 6px; font-weight: 700; }
     input, textarea, button { width: 100%; box-sizing: border-box; font: inherit; }
-    input, textarea { margin-top: 6px; padding: 10px; border: 1px solid #b8b1a5; border-radius: 6px; background: #fffdf8; }
-    textarea { min-height: 82px; resize: vertical; }
-    button { margin-top: 12px; padding: 10px; border: 0; border-radius: 6px; color: white; background: #155e75; cursor: pointer; font-weight: 700; }
+    input, textarea {
+      padding: 10px;
+      border: 1px solid #b8b1a5;
+      border-radius: 9px;
+      color: #3d454d;
+      background: #fffdf8;
+    }
+    textarea { min-height: 80px; resize: vertical; }
+    button {
+      min-height: 39px;
+      padding: 9px 12px;
+      border: 0;
+      border-radius: 8px;
+      color: white;
+      background: #17677b;
+      cursor: pointer;
+      font-weight: 700;
+    }
     button:hover { background: #0e7490; }
-    .secondary { background: #475569; }
-    .hint { color: #5b6570; font-size: 13px; }
-    .result { min-height: 54px; padding: 10px; border-left: 4px solid #155e75; background: #fffdf8; white-space: pre-wrap; }
-    section { margin-top: 18px; border-top: 1px solid #d4cec3; padding-top: 14px; }
+    .secondary { background: #475a70; }
+    .hint { margin: 0; color: #5b6570; font-size: 12px; }
+    .result {
+      min-height: 34px;
+      margin: 0;
+      padding: 9px 11px;
+      border: 1px solid #2c9d61;
+      border-radius: 9px;
+      color: #5b6570;
+      background: #fffdf8;
+      white-space: pre-wrap;
+    }
+    section {
+      margin-top: 0;
+      padding-top: 14px;
+      border-top: 1px solid #d4cec3;
+    }
+    section + section { margin-top: 15px; }
+    .button-row { display: flex; gap: 8px; margin-top: 10px; }
+    .button-row button { margin: 0; }
+    .voice-card {
+      padding: 12px;
+      border: 1px solid #d4cec3;
+      border-radius: 9px;
+      background: #fffdf8;
+    }
+    .voice-card p { margin: 0; }
+    .voice-card strong { color: #17212b; }
+    .meter-row {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 9px 0 0;
+      color: #6d7279;
+      font-size: 12px;
+    }
+    .meter {
+      flex: 1;
+      height: 6px;
+      overflow: hidden;
+      border-radius: 4px;
+      background: #e1e4e8;
+    }
+    .meter::after {
+      display: block;
+      width: 28%;
+      height: 100%;
+      content: "";
+      background: #20bb78;
+    }
+    #question { display: block; margin-top: 0; }
+    #ask { margin-top: 14px; }
+    #listen { margin-top: 9px; }
+    #voiceStatus { margin-top: 8px; }
   </style>
 </head>
 <body>
   <h1>NRVI</h1>
-  <p class="hint">Tu acompañante para entender y usar la página actual.</p>
 
   <section>
     <h2>Conexión</h2>
     <label for="backendUrl">URL del backend</label>
     <input id="backendUrl" type="url" placeholder="http://localhost:3000">
-    <button id="save">Guardar conexión</button>
-    <p id="connectionStatus" class="hint">El backend mantiene las API keys fuera de la extensión.</p>
+    <div class="button-row">
+      <button id="save">Guardar conexión</button>
+      <button id="test" class="secondary" type="button">Probar conexión</button>
+    </div>
+    <p id="connectionStatus" class="result">Backend no probado.</p>
   </section>
 
   <section>
-    <h2>Prueba de texto</h2>
+    <h2>Prueba y voz</h2>
+    <div class="voice-card">
+      <p><strong>Estado:</strong> <span id="voiceState">Inactivo</span></p>
+      <p class="hint">Pulsa «Iniciar llamada» o di «Navi».</p>
+    </div>
+    <div class="meter-row">
+      <span>Micrófono</span>
+      <span class="meter" aria-hidden="true"></span>
+      <span>25%</span>
+    </div>
     <label for="question">Habla con NRVI</label>
     <textarea id="question" placeholder="¿De qué trata esta página? ¿Dónde inicio sesión?"></textarea>
     <button id="ask">Preguntar</button>
-    <button id="listen" class="secondary" aria-pressed="true">Desactivar comando "Navi"</button>
+    <button id="listen" class="secondary" aria-pressed="true">Iniciar llamada</button>
     <p id="voiceStatus" class="hint">El comando "Navi" está activo en la pestaña actual.</p>
-    <p id="answer" class="result" aria-live="polite">Escribe una pregunta para probar el agente.</p>
+    <p id="answer" class="hint" aria-live="polite">Escribe una pregunta para probar el agente.</p>
   </section>
 
   <script src="ui.js"></script>

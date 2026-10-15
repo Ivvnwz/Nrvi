@@ -40,8 +40,12 @@
       response.actions?.forEach(runAction);
       history.push({ role: 'user', content: question }, { role: 'assistant', content: response.text });
       if (history.length > 12) history.splice(0, 2);
-      window.nrviVoice.playResponse(response.text, response.audio, response.audioMimeType);
-      done?.({ ok: true, text: response.text });
+      window.nrviVoice.playResponse(
+        response.text,
+        response.audio,
+        response.audioMimeType,
+        () => done?.({ ok: true, text: response.text })
+      );
     });
   };
 

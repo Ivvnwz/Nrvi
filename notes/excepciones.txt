@@ -94,12 +94,21 @@ PRIORIDADES
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 Detalle importante
-Hay un detalle importante en la implementación actual: speechSynthesis puede pausarse y reanudarse, 
-pero el audio de ElevenLabs se crea como un objeto local con new Audio(...). Para soportar pausa, 
-reanudación y detención correctamente habría que guardar ese objeto como currentAudio y controlar 
-ambos sistemas con una misma interfaz:
+speechSynthesis puede pausarse y reanudarse. El audio de ElevenLabs se guarda
+como currentAudio para controlar ambos sistemas con una misma interfaz:
 
 stopSpeaking();
 pauseSpeaking();
 resumeSpeaking();
 repeatLastResponse();
+
+CORRECCIÓN APLICADA EN EL FLUJO DE ESCUCHA
+
+- Cada instancia de SpeechRecognition conserva su propia generación; los eventos
+  tardíos de una sesión anterior ya no pueden limpiar o modificar una sesión nueva.
+- El flujo de voz usa dos pasos: se dice "Navi", Navi pide la pregunta y después
+  inicia una sesión independiente para escucharla.
+- La escucha vuelve a activarse después de terminar el audio de la respuesta,
+  evitando que Navi se escuche a sí mismo.
+- Los errores de permisos, captura de audio, silencio y red muestran mensajes
+  claros y el reconocimiento vuelve al modo de activación cuando es posible.
