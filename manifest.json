@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "NRVI - Agente web accesible",
-  "version": "0.1.0",
-  "description": "Agente conversacional que explica y ayuda a interactuar con páginas web.",
+  "version": "0.2.0",
+  "description": "Agente conversacional con soporte de voz para ayudar a entender e interactuar con páginas web.",
   "permissions": ["activeTab", "storage", "tabs", "scripting"],
   "host_permissions": ["http://localhost:3000/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": { "service_worker": "background/service-worker.js", "type": "module" },
   "action": {
     "default_title": "Hablar con NRVI",
@@ -18,7 +19,8 @@
   },
   "content_scripts": [{
     "matches": ["<all_urls>"],
-    "js": ["content/context.js", "content/voice.js", "content/agent.js"],
+    "js": ["content/context.js", "content/voice.js", "content/agent.js", "content/overlay.js"],
     "run_at": "document_idle"
-  }]
+  }],
+  "minimum_chrome_version": "116"
 }

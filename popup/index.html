@@ -5,42 +5,69 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NRVI</title>
   <style>
-    :root { color-scheme: light; font-family: system-ui, sans-serif; }
-    body { width: 340px; margin: 0; padding: 18px; color: #17212b; background: #f4f1ea; }
-    h1 { margin: 0 0 4px; font-size: 24px; }
-    p { line-height: 1.4; }
-    label { display: block; margin-top: 14px; font-weight: 700; }
+    :root { color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; }
+    body { width: 360px; margin: 0; padding: 16px; color: #17212b; background: #f7f3ed; font-size: 14px; }
+    h1 { margin: 0 0 2px; font-size: 22px; }
+    h2 { margin: 0 0 6px; font-size: 16px; font-weight: 700; }
+    p { margin: 0; line-height: 1.4; }
+    label { display: block; margin-top: 10px; font-weight: 700; }
     input, textarea, button { width: 100%; box-sizing: border-box; font: inherit; }
-    input, textarea { margin-top: 6px; padding: 10px; border: 1px solid #b8b1a5; border-radius: 6px; background: #fffdf8; }
-    textarea { min-height: 82px; resize: vertical; }
-    button { margin-top: 12px; padding: 10px; border: 0; border-radius: 6px; color: white; background: #155e75; cursor: pointer; font-weight: 700; }
-    button:hover { background: #0e7490; }
+    input, textarea { margin-top: 6px; padding: 9px 10px; border: 1px solid #b8b1a5; border-radius: 8px; background: #fffdf8; }
+    textarea { min-height: 80px; resize: vertical; }
+    button { margin-top: 10px; padding: 10px; border: 0; border-radius: 8px; color: #fff; background: #155e75; cursor: pointer; font-weight: 700; }
+    button:hover:not(:disabled) { background: #0e7490; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
     .secondary { background: #475569; }
-    .hint { color: #5b6570; font-size: 13px; }
-    .result { min-height: 54px; padding: 10px; border-left: 4px solid #155e75; background: #fffdf8; white-space: pre-wrap; }
-    section { margin-top: 18px; border-top: 1px solid #d4cec3; padding-top: 14px; }
+    .secondary:hover:not(:disabled) { background: #334155; }
+    .hint { color: #5b6570; font-size: 12px; }
+    .row { display: flex; gap: 8px; }
+    .row > button { flex: 1; }
+    .status { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: #fffdf8; border: 1px solid #d4cec3; }
+    .status.ok { border-color: #16a34a; }
+    .status.err { border-color: #dc2626; }
+    .status.warn { border-color: #d97706; }
+    section { margin-top: 16px; border-top: 1px solid #d4cec3; padding-top: 12px; }
+    .mic { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+    .bar { flex: 1; height: 6px; border-radius: 4px; background: #e5e7eb; overflow: hidden; }
+    .fill { height: 100%; width: 0%; background: linear-gradient(90deg, #06b6d4, #22c55e); transition: width 60ms linear; }
+    .level { min-width: 42px; text-align: right; font-size: 12px; color: #475569; }
   </style>
 </head>
 <body>
   <h1>NRVI</h1>
-  <p class="hint">Tu acompañante para entender y usar la página actual.</p>
+  <p class="hint">Acompañante para entender y usar la página actual.</p>
 
   <section>
     <h2>Conexión</h2>
     <label for="backendUrl">URL del backend</label>
     <input id="backendUrl" type="url" placeholder="http://localhost:3000">
-    <button id="save">Guardar conexión</button>
-    <p id="connectionStatus" class="hint">El backend mantiene las API keys fuera de la extensión.</p>
+    <div class="row">
+      <button id="save">Guardar conexión</button>
+      <button id="checkHealth" class="secondary">Probar conexión</button>
+    </div>
+    <div id="connectionStatus" class="status">
+      <p class="hint">El backend mantiene las API keys fuera de la extensión. Para otra URL, guarda y autoriza el host.</p>
+    </div>
   </section>
 
   <section>
-    <h2>Prueba de texto</h2>
+    <h2>Prueba y voz</h2>
+    <div id="voiceStatus" class="status">
+      <p><strong>Estado:</strong> <span id="voiceStateLabel">comprobando…</span></p>
+      <p class="hint" id="voiceStateHint">Consulta la pestaña activa.</p>
+    </div>
+    <div class="mic">
+      <span class="hint" title="Actividad detectada por el reconocimiento de voz; no es una medición eléctrica del micrófono">Actividad de voz</span>
+      <div class="bar" aria-hidden="true">
+        <div id="micFill" class="fill"></div>
+      </div>
+      <span id="micLevelText" class="level">0%</span>
+    </div>
     <label for="question">Habla con NRVI</label>
     <textarea id="question" placeholder="¿De qué trata esta página? ¿Dónde inicio sesión?"></textarea>
     <button id="ask">Preguntar</button>
-    <button id="listen" class="secondary" aria-pressed="true">Desactivar comando "Navi"</button>
-    <p id="voiceStatus" class="hint">El comando "Navi" está activo en la pestaña actual.</p>
-    <p id="answer" class="result" aria-live="polite">Escribe una pregunta para probar el agente.</p>
+    <button id="listen" class="secondary" aria-pressed="false">Iniciar llamada</button>
+    <p id="answer" class="hint" aria-live="polite">Escribe una pregunta para probar el agente.</p>
   </section>
 
   <script src="ui.js"></script>
