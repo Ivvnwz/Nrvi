@@ -23,11 +23,37 @@ function describeError(error) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type !== 'agent.request') return false;
+  if (!['agent.request', 'transcription.request'].includes(message.type)) return false;
 
   (async () => {
     try {
-      const response = await fetchWithTimeout(`${await getBackendUrl()}/api/agent`, {
+      const backendUrl = await getBackendUrl();
+      if (message.type === 'transcription.request') {
+        const form = new FormData();
+        if (typeof message.audioBase64 !== 'string' || !message.audioBase64) {
+          throw new Error('No se recibió audio para transcribir.');
+        }
+        const binary = atob(message.audioBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+        const audio = new Blob([bytes], { type: message.mimeType || 'audio/webm' });
+        form.append('file', audio, message.fileName || 'nrvi.webm');
+        const response = await fetchWithTimeout(`${backendUrl}/api/transcribe`, {
+          method: 'POST',
+          body: form
+        }, REQUEST_TIMEOUT_MS);
+        let data = {};
+        try {
+          data = await response.json();
+        } catch {
+          data = {};
+        }
+        if (!response.ok) throw new Error(data.error || `El backend respondió ${response.status}.`);
+        sendResponse({ ok: true, ...data });
+        return;
+      }
+
+      const response = await fetchWithTimeout(`${backendUrl}/api/agent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

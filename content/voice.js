@@ -9,9 +9,15 @@
   const SLOW_COMMANDS = ['mas despacio', 'habla mas despacio', 'explica mas despacio', 'explicamelo mas despacio', 'explicamelo de nuevo mas despacio'];
   const STOP_LISTENING_COMMANDS = ['deja de escuchar', 'para de escuchar', 'no escuches mas', 'deja de escucharme', 'termina', 'cuelga', 'colgar', 'termina la llamada'];
 
-  const recognitionType = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-  let recognition;
+  let recorder;
+  let audioStream;
+  let audioContext;
+  let analyser;
+  let recorderMonitor;
+  let audioChunks = [];
+  let speechDetected = false;
+  let speechStartedAt = 0;
+  let silenceStartedAt = 0;
   let mode = 'off';
   let active = false;
   let wakeWordEnabled = false;
@@ -72,7 +78,7 @@
   };
 
   const broadcastState = () => {
-    const snapshot = { state: currentState(), wakeWordEnabled, inCall, active, processing, speaking, micLevel };
+    const snapshot = { state: currentState(), error: errorState, wakeWordEnabled, inCall, active, processing, speaking, micLevel };
     dispatchLocal('nrvi:state', snapshot);
     try {
       chrome.runtime.sendMessage({ type: 'voice.state', ...snapshot }, () => void chrome.runtime.lastError);
@@ -101,6 +107,7 @@
 
   const fail = message => {
     errorState = message;
+    console.error('[NRVI] Error de voz:', message);
     broadcastState();
     speak(message);
     clearTimeout(errorTimer);
@@ -248,139 +255,157 @@
     return false;
   };
 
+  const recorderMimeType = () => {
+    const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
+    return candidates.find(type => MediaRecorder.isTypeSupported(type)) || '';
+  };
+
+  const stopRecorder = (discard = false) => {
+    if (recorderMonitor) {
+      clearInterval(recorderMonitor);
+      recorderMonitor = null;
+    }
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.__discard = discard;
+      recorder.stop();
+    }
+  };
+
+  const requestTranscription = blob => new Promise(resolve => {
+    blob.arrayBuffer().then(audio => {
+      const bytes = new Uint8Array(audio);
+      let binary = '';
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      }
+      chrome.runtime.sendMessage({
+        type: 'transcription.request',
+        audioBase64: btoa(binary),
+        mimeType: blob.type || 'audio/webm',
+        fileName: 'nrvi.webm'
+      }, response => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        resolve(response || { ok: false, error: 'No hubo respuesta del backend.' });
+      });
+    }).catch(error => resolve({ ok: false, error: error.message }));
+  });
+
+  const processTranscript = transcript => {
+    const text = String(transcript || '').trim();
+    if (!text) {
+      processing = false;
+      if (inCall) startRecognition('call');
+      else sync();
+      return;
+    }
+    console.info('[NRVI] Transcripción recibida:', text);
+    broadcastTranscript(text, true);
+    if (handleVoiceCommand(text)) {
+      processing = false;
+      if (inCall) startRecognition('call');
+      return;
+    }
+    const question = extractQuestion(text)?.trim() || text;
+    if (handleVoiceCommand(question)) {
+      processing = false;
+      if (inCall) startRecognition('call');
+      return;
+    }
+    askQuestion(question);
+  };
+
   const startRecognition = nextMode => {
-    if (!recognitionType || processing) return;
+    if (processing || !inCall || typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;
     if (document.visibilityState !== 'visible') {
       active = false;
       stopMeter();
       sync();
       return;
     }
-    if (recognition) {
-      recognition.onstart = null;
-      recognition.onend = null;
-      recognition.onerror = null;
-      recognition.onresult = null;
-      recognition.onspeechstart = null;
-      recognition.onspeechend = null;
-      recognition.abort();
-    }
     mode = nextMode;
-    recognition = new recognitionType();
-    recognition.lang = 'es-ES';
-    recognition.continuous = nextMode === 'call';
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
-    recognition.onstart = () => {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      if (!inCall || processing) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      audioStream = stream;
+      audioContext = new AudioContext();
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 512;
+      audioContext.createMediaStreamSource(stream).connect(analyser);
+      const mimeType = recorderMimeType();
+      recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      audioChunks = [];
+      speechDetected = false;
+      speechStartedAt = 0;
+      silenceStartedAt = 0;
+      recorder.ondataavailable = event => {
+        if (event.data.size) audioChunks.push(event.data);
+      };
+      recorder.onstop = async () => {
+        const chunks = audioChunks;
+        const discard = recorder.__discard;
+        audioChunks = [];
+        recorder = null;
+        stream.getTracks().forEach(track => track.stop());
+        audioStream = null;
+        audioContext?.close();
+        audioContext = null;
+        analyser = null;
+        stopMeter();
+        active = false;
+        if (!chunks.length || discard) {
+          if (inCall && !processing) startRecognition('call');
+          return;
+        }
+        processing = true;
+        sync();
+        const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
+        const result = await requestTranscription(blob);
+        if (!result.ok) {
+          processing = false;
+          fail(result.error || 'No se pudo transcribir el audio.');
+          return;
+        }
+        processTranscript(result.text);
+      };
+      recorder.start();
       active = true;
+      console.info('[NRVI] Grabación MediaRecorder iniciada:', mimeType || 'audio/webm');
       startMeter();
       sync();
-    };
-    recognition.onspeechstart = () => bumpMic(0.75);
-    recognition.onspeechend = () => bumpMic(0.15);
-    recognition.onend = () => {
-      active = false;
-      recognition = null;
-      stopMeter();
-      sync();
-      if (wakeWordEnabled && !processing && document.visibilityState === 'visible') {
-        setTimeout(() => {
-          if (wakeWordEnabled && !processing && document.visibilityState === 'visible') {
-            startRecognition(recognitionMode());
-          }
-        }, 250);
-      }
-    };
-    recognition.onerror = event => {
-      active = false;
-      const error = event.error;
-      console.debug('[NRVI] error de reconocimiento:', error);
-      if (error === 'aborted') return;
-      if (['not-allowed', 'service-not-allowed', 'audio-capture'].includes(error)) {
-        wakeWordEnabled = false;
-        inCall = false;
-        mode = 'off';
-        stopMeter();
-        fail('No tengo permiso para usar el micrófono.');
-        return;
-      }
-      if (error === 'no-speech') {
-        sync();
-        return;
-      }
-      if (error === 'network') {
-        fail('Se perdió la conexión con el reconocimiento de voz.');
-        return;
-      }
-      sync();
-    };
-    recognition.onresult = event => {
-      let interim = '';
-      let final = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        const text = result[0]?.transcript || '';
-        if (result.isFinal) final += text;
-        else interim += text;
-      }
-
-      const candidate = (final || interim).trim();
-      if (!candidate) return;
-
-      if (speaking && inCall) {
-        if (isEcho(candidate)) return;
-        stopSpeaking();
-      }
-
-      if (mode === 'wake') {
-        const transcript = final.trim();
-        if (!transcript) return;
-        const question = extractQuestion(transcript);
-        if (question === null) return;
-        console.debug('[NRVI] Navi detectado, activando llamada:', transcript);
-        broadcastTranscript(transcript, true);
-        setCall(true, question);
-        return;
-      }
-
-      if (!speaking && interim) broadcastTranscript(interim.trim(), false);
-
-      const transcript = final.trim();
-      if (!transcript) return;
-      console.debug('[NRVI] escuchado:', transcript);
-
-      if (handleVoiceCommand(transcript)) return;
-
-      let question = extractQuestion(transcript);
-      if (question === null) question = transcript;
-      question = question.trim();
-      if (question && handleVoiceCommand(question)) return;
-
-      broadcastTranscript(transcript, true);
-      if (recognition) recognition.stop();
-
-      if (question) askQuestion(question);
-      else if (wakeWordEnabled && !processing) startRecognition(recognitionMode());
-    };
-    try {
-      recognition.start();
-    } catch (error) {
-      if (error.name === 'InvalidStateError') {
-        setTimeout(() => {
-          if (wakeWordEnabled && !processing && document.visibilityState === 'visible') {
-            startRecognition(recognitionMode());
-          }
-        }, 400);
-      } else {
-        recognition = null;
-        wakeWordEnabled = false;
-        inCall = false;
-        mode = 'off';
-        active = false;
-        stopMeter();
-        fail('No pude iniciar el micrófono.');
-      }
-    }
+      const data = new Uint8Array(analyser.fftSize);
+      recorderMonitor = setInterval(() => {
+        if (!recorder || !analyser) return;
+        analyser.getByteTimeDomainData(data);
+        const rms = Math.sqrt(data.reduce((sum, value) => {
+          const sample = (value - 128) / 128;
+          return sum + sample * sample;
+        }, 0) / data.length);
+        bumpMic(Math.min(1, rms * 5));
+        const now = Date.now();
+        if (rms > 0.035) {
+          if (!speechDetected) speechStartedAt = now;
+          speechDetected = true;
+          silenceStartedAt = 0;
+        } else if (speechDetected) {
+          silenceStartedAt ||= now;
+        }
+        if ((speechDetected && silenceStartedAt && now - silenceStartedAt > 1200)
+          || now - speechStartedAt > 15000) {
+          stopRecorder();
+        }
+      }, 100);
+    }).catch(error => {
+      console.error('[NRVI] No se pudo acceder al micrófono:', error);
+      wakeWordEnabled = false;
+      inCall = false;
+      mode = 'off';
+      fail('No se pudo acceder al micrófono. Revisa el permiso de Brave para esta página.');
+    });
   };
 
   const recognitionMode = () => (inCall ? 'call' : 'wake');
@@ -402,16 +427,9 @@
     wakeWordEnabled = false;
     inCall = false;
     mode = 'off';
-    if (recognition) {
-      recognition.onstart = null;
-      recognition.onend = null;
-      recognition.onerror = null;
-      recognition.onresult = null;
-      recognition.onspeechstart = null;
-      recognition.onspeechend = null;
-      recognition.abort();
-      recognition = null;
-    }
+    stopRecorder(true);
+    audioStream?.getTracks().forEach(track => track.stop());
+    audioStream = null;
     active = false;
     stopMeter();
     sync();
@@ -419,16 +437,9 @@
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') {
-      if (recognition) {
-        recognition.onstart = null;
-        recognition.onend = null;
-        recognition.onerror = null;
-        recognition.onresult = null;
-        recognition.onspeechstart = null;
-        recognition.onspeechend = null;
-        recognition.abort();
-        recognition = null;
-      }
+      stopRecorder(true);
+      audioStream?.getTracks().forEach(track => track.stop());
+      audioStream = null;
       active = false;
       stopMeter();
       sync();
@@ -438,33 +449,22 @@
   });
 
   const setWakeWord = enabled => {
-    if (!recognitionType) {
-      stopWakeWord();
-      fail('El reconocimiento de voz no está disponible en este navegador.');
-      return false;
-    }
     if (!enabled) {
       stopWakeWord();
       return false;
     }
-    wakeWordEnabled = true;
-    inCall = false;
-    broadcastState();
-    startRecognition('wake');
-    return true;
+    wakeWordEnabled = false;
+    sync();
+    return false;
   };
 
   const setCall = (enabled, initialQuestion) => {
-    if (!recognitionType) {
-      fail('El reconocimiento de voz no está disponible en este navegador.');
-      return false;
-    }
     if (enabled) {
       wakeWordEnabled = true;
       inCall = true;
+      errorState = null;
       broadcastState();
       if (initialQuestion) {
-        if (recognition) recognition.stop();
         askQuestion(initialQuestion);
       } else {
         startRecognition('call');
@@ -472,9 +472,7 @@
       return true;
     }
     inCall = false;
-    broadcastState();
-    if (wakeWordEnabled) startRecognition('wake');
-    else stopWakeWord();
+    stopWakeWord();
     return false;
   };
 
@@ -497,10 +495,6 @@
     setWakeWord,
     setCall,
     toggle() {
-      if (!recognitionType) {
-        speak('El reconocimiento de voz no está disponible en este navegador. Puedes usar el cuadro de texto del panel.');
-        return;
-      }
       setCall(!inCall);
     }
   };
@@ -512,10 +506,6 @@
     }
     if (message.type === 'voice.setCall') {
       const enabled = Boolean(message.enabled);
-      if (enabled && !recognitionType) {
-        sendResponse({ ok: false, error: 'El reconocimiento de voz no está disponible en este navegador.' });
-        return false;
-      }
       sendResponse({ ok: true, inCall: setCall(enabled) });
       return false;
     }
@@ -524,7 +514,7 @@
     return false;
   });
 
-  chrome.storage.local.get({ wakeWordEnabled: true }, settings => {
+  chrome.storage.local.get({ wakeWordEnabled: false }, settings => {
     setWakeWord(Boolean(settings.wakeWordEnabled));
   });
 })();

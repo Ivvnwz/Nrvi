@@ -25,6 +25,7 @@
   let visible = false;
   let state = 'idle';
   let wakeWordEnabled = false;
+  let errorMessage = '';
   let level = 0;
   let transcript = '';
   let rafId = null;
@@ -141,6 +142,7 @@
   const isAlive = () => state && state !== 'idle';
 
   const subText = () => {
+    if (state === 'error') return errorMessage || 'Revisa el permiso del micrófono y la configuración de voz del navegador';
     if (transcript) return transcript;
     if (state === 'standby') return 'Di «Navi» para activar la llamada';
     if (state === 'listening' && wakeWordEnabled) return WAKE_HINT;
@@ -226,6 +228,7 @@
   window.addEventListener('nrvi:state', event => {
     const detail = event.detail || {};
     state = detail.state || 'idle';
+    errorMessage = String(detail.error || '');
     if (typeof detail.wakeWordEnabled === 'boolean') wakeWordEnabled = detail.wakeWordEnabled;
     if (typeof detail.micLevel === 'number') level = detail.micLevel;
     if (state === 'speaking' || state === 'idle') transcript = '';
