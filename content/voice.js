@@ -7,7 +7,20 @@
   const RESUME_COMMANDS = ['reanuda', 'continua', 'sigue hablando'];
   const REPEAT_COMMANDS = ['repite', 'repetir', 'otra vez', 'vuelve a explicarlo', 'que dijiste', 'que has dicho', 'repitemelo'];
   const SLOW_COMMANDS = ['mas despacio', 'habla mas despacio', 'explica mas despacio', 'explicamelo mas despacio', 'explicamelo de nuevo mas despacio'];
-  const STOP_LISTENING_COMMANDS = ['deja de escuchar', 'para de escuchar', 'no escuches mas', 'deja de escucharme', 'termina', 'cuelga', 'colgar', 'termina la llamada'];
+  const STOP_LISTENING_COMMANDS = [
+    'deja de escuchar',
+    'para de escuchar',
+    'no escuches mas',
+    'deja de escucharme',
+    'termina',
+    'termina la llamada',
+    'finaliza',
+    'finalizar',
+    'finaliza la llamada',
+    'finalizar la llamada',
+    'cuelga',
+    'colgar'
+  ];
   const PAUSE_PHRASES = ['pausa la respuesta', 'espera'];
   const STOP_PHRASES = ['deten la respuesta', 'para la respuesta', 'cancela la respuesta'];
   const INACTIVITY_TIMEOUT_MS = 7000;
@@ -23,7 +36,6 @@
   let audioContext;
   let analyser;
   let analyserSink;
-  let audioProcessor;
   let recorderMonitor;
   let recognitionStarting = false;
   let audioChunks = [];
@@ -50,6 +62,7 @@
   let errorState = null;
   let errorTimer = null;
   let inactivityTimer = null;
+  const persistedCallKey = 'nrvi-call-state';
 
   let micLevel = 0;
   let meterTimer = null;
@@ -140,6 +153,18 @@
   };
 
   const sync = () => broadcastState();
+
+  const persistCallState = () => {
+    try {
+      if (inCall && sessionId) {
+        sessionStorage.setItem(persistedCallKey, JSON.stringify({ sessionId }));
+      } else {
+        sessionStorage.removeItem(persistedCallKey);
+      }
+    } catch (error) {
+      console.warn('[NRVI] No se pudo conservar la sesión:', error.message);
+    }
+  };
 
   const fail = message => {
     errorState = message;
@@ -285,7 +310,11 @@
   const classifyVoiceCommand = transcript => {
     const command = normalize(transcript);
     if (!command) return null;
-    if (STOP_LISTENING_COMMANDS.includes(command)) return 'end_call';
+    if (STOP_LISTENING_COMMANDS.includes(command)
+      || command.endsWith(' finaliza')
+      || command.endsWith(' finalizar')
+      || command.endsWith(' termina')
+      || command.endsWith(' cuelga')) return 'end_call';
     if (STOP_COMMANDS.includes(command) || startsWithPhrase(command, STOP_PHRASES)) return 'stop';
     if (command === PAUSE_COMMAND || startsWithPhrase(command, PAUSE_PHRASES)) return 'pause';
     if (RESUME_COMMANDS.includes(command)) return 'resume';
@@ -419,14 +448,6 @@
       source.connect(analyser);
       analyser.connect(analyserSink);
       analyserSink.connect(audioContext.destination);
-      audioProcessor = audioContext.createScriptProcessor(1024, 1, 1);
-      audioProcessor.onaudioprocess = event => {
-        const channel = event.inputBuffer.getChannelData(0);
-        const sum = channel.reduce((total, sample) => total + sample * sample, 0);
-        audioProcessor.currentRms = Math.sqrt(sum / channel.length);
-      };
-      source.connect(audioProcessor);
-      audioProcessor.connect(analyserSink);
       if (audioContext.state === 'suspended') await audioContext.resume();
       const audioTrack = stream.getAudioTracks()[0];
       console.info('[NRVI] AudioContext:', audioContext.state, {
@@ -474,7 +495,6 @@
         audioContext = null;
         analyser = null;
         analyserSink = null;
-        audioProcessor = null;
         stopMeter();
         active = false;
         const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
@@ -507,8 +527,7 @@
       recorderMonitor = setInterval(() => {
         if (!recorder || !analyser) return;
         analyser.getFloatTimeDomainData(data);
-        const analyserRms = Math.sqrt(data.reduce((sum, sample) => sum + sample * sample, 0) / data.length);
-        const rms = Math.max(analyserRms, audioProcessor?.currentRms || 0);
+        const rms = Math.sqrt(data.reduce((sum, sample) => sum + sample * sample, 0) / data.length);
         bumpMic(Math.min(1, rms * 5));
         const now = Date.now();
         if (noiseSamples.length < 60) {
@@ -559,10 +578,6 @@
 
   const resumeRecognitionAfterSpeech = () => {
     if (!wakeWordEnabled || !inCall || processing) return;
-    if (speaking) {
-      setTimeout(resumeRecognitionAfterSpeech, 100);
-      return;
-    }
     startRecognition(recognitionMode());
     armInactivityTimer();
   };
@@ -585,6 +600,7 @@
     wakeWordEnabled = false;
     inCall = false;
     sessionId = null;
+    persistCallState();
     mode = 'off';
     clearInactivityTimer();
     stopRecorder(true);
@@ -623,9 +639,14 @@
 
   const setCall = (enabled, initialQuestion) => {
     if (enabled) {
+      if (inCall) {
+        if (!active && !processing && !speaking) startRecognition('call');
+        return true;
+      }
       sessionId ||= `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       wakeWordEnabled = true;
       inCall = true;
+      persistCallState();
       errorState = null;
       broadcastState();
       speak(GREETING, {
@@ -648,6 +669,24 @@
     setCall(false);
   };
 
+  const restoreCallState = () => {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(persistedCallKey) || 'null');
+      if (!saved?.sessionId) return;
+      sessionId = saved.sessionId;
+      wakeWordEnabled = true;
+      inCall = true;
+      sync();
+      if (document.visibilityState === 'visible') {
+        setTimeout(() => {
+          if (inCall && !active && !processing) startRecognition('call');
+        }, 250);
+      }
+    } catch (error) {
+      console.warn('[NRVI] No se pudo restaurar la sesión:', error.message);
+    }
+  };
+
   window.nrviVoice = {
     speak,
     playResponse,
@@ -666,6 +705,8 @@
       setCall(!inCall);
     }
   };
+
+  restoreCallState();
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'voice.getState') {

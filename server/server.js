@@ -9,8 +9,10 @@ const app = express();
 const port = Number(process.env.PORT || 3000);
 const groqTimeout = Number(process.env.GROQ_TIMEOUT_MS || 20000);
 const groqSttTimeout = Number(process.env.GROQ_STT_TIMEOUT_MS || 30000);
+const deepgramTimeout = Number(process.env.DEEPGRAM_STT_TIMEOUT_MS || 30000);
 const elevenTimeout = Number(process.env.ELEVENLABS_TIMEOUT_MS || 15000);
 const sttModel = process.env.GROQ_STT_MODEL || 'whisper-large-v3-turbo';
+const deepgramModel = process.env.DEEPGRAM_STT_MODEL || 'nova-3';
 const maxCompletionTokens = Number(process.env.GROQ_MAX_COMPLETION_TOKENS || 700);
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -181,10 +183,37 @@ app.get('/health', (_request, response) => {
   response.json(result);
 });
 
+const transcribeWithDeepgram = async file => {
+  const params = new URLSearchParams({
+    model: deepgramModel,
+    language: 'es',
+    smart_format: 'true',
+    punctuate: 'true'
+  });
+  const providerResponse = await fetchWithTimeout(`https://api.deepgram.com/v1/listen?${params}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`,
+      'Content-Type': file.mimetype || 'audio/webm'
+    },
+    body: file.buffer
+  }, deepgramTimeout);
+  const data = await providerResponse.json().catch(() => ({}));
+  if (!providerResponse.ok) {
+    const error = new Error(data.err_msg || data.message || 'Deepgram rechazó la transcripción.');
+    error.status = providerResponse.status;
+    throw error;
+  }
+  return {
+    status: providerResponse.status,
+    text: data.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() || ''
+  };
+};
+
 app.post('/api/transcribe', upload.single('file'), async (request, response) => {
   const sessionId = request.get('X-NRVI-Session') || undefined;
-  if (!process.env.GROQ_API_KEY) {
-    const error = 'Configura GROQ_API_KEY en server/.env.';
+  if (!process.env.DEEPGRAM_API_KEY && !process.env.GROQ_API_KEY) {
+    const error = 'Configura DEEPGRAM_API_KEY o GROQ_API_KEY en server/.env.';
     void writeLog('error', 'transcription.response_error', { sessionId, status: 503, error });
     return response.status(503).json({ error });
   }
@@ -204,6 +233,40 @@ app.post('/api/transcribe', upload.single('file'), async (request, response) => 
   }
 
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  if (process.env.DEEPGRAM_API_KEY) {
+    void writeLog('info', 'transcription.request', {
+      requestId,
+      sessionId,
+      provider: 'deepgram',
+      model: deepgramModel,
+      mimeType: request.file.mimetype,
+      audioBytes: request.file.size
+    });
+    try {
+      const result = await transcribeWithDeepgram(request.file);
+      await writeLog('info', 'transcription.response', {
+        requestId,
+        sessionId,
+        provider: 'deepgram',
+        status: result.status,
+        response: safeLogValue(result.text)
+      });
+      return response.json({ text: result.text });
+    } catch (error) {
+      await writeLog('error', 'transcription.provider_error', {
+        requestId,
+        sessionId,
+        provider: 'deepgram',
+        status: error.status || 502,
+        error: error.message,
+        fallback: Boolean(process.env.GROQ_API_KEY)
+      });
+      if (!process.env.GROQ_API_KEY) {
+        return response.status(502).json({ error: 'No se pudo transcribir el audio con Deepgram.' });
+      }
+    }
+  }
+
   void writeLog('info', 'transcription.request', {
     requestId,
     sessionId,

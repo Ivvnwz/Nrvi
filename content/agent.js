@@ -3,11 +3,19 @@
   window.__nrviAgentLoaded = true;
 
   const history = [];
+  const persistedHistoryKey = 'nrvi-conversation-history';
   let busy = false;
   let requestId = 0;
   let pendingDone = null;
   let rateLimitUntil = 0;
   const fallbackSessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  try {
+    const savedHistory = JSON.parse(sessionStorage.getItem(persistedHistoryKey) || '[]');
+    if (Array.isArray(savedHistory)) history.push(...savedHistory.slice(-12));
+  } catch (error) {
+    console.warn('[NRVI] No se pudo restaurar el historial:', error.message);
+  }
 
   const setNativeValue = (element, value) => {
     if (element.tagName === 'SELECT') {
@@ -65,6 +73,44 @@
     }
   };
 
+  const isNavigationAction = action => {
+    if (!action || action.type !== 'click_element') return false;
+    const element = window.nrviResolve?.(action.id);
+    return element instanceof HTMLAnchorElement && Boolean(element.href);
+  };
+
+  const prepareNavigation = response => new Promise(resolve => {
+    chrome.runtime.sendMessage({
+      type: 'navigation.prepare',
+      sessionId: window.nrviVoice?.getSessionId?.() || fallbackSessionId,
+      response: {
+        text: response.text,
+        audio: response.audio,
+        audioMimeType: response.audioMimeType
+      },
+      history
+    }, result => resolve(!chrome.runtime.lastError && result?.ok));
+  });
+
+  const restorePendingNavigation = () => {
+    chrome.runtime.sendMessage({ type: 'navigation.consume' }, pending => {
+      if (chrome.runtime.lastError || !pending?.pending) return;
+      const state = pending.pending;
+      if (Array.isArray(state.history)) {
+        history.splice(0, history.length, ...state.history.slice(-12));
+        try {
+          sessionStorage.setItem(persistedHistoryKey, JSON.stringify(history));
+        } catch (error) {
+          console.warn('[NRVI] No se pudo restaurar el historial de navegación:', error.message);
+        }
+      }
+      if (state.response) {
+        window.nrviVoice?.playResponse?.(state.response.text, state.response.audio, state.response.audioMimeType);
+        rememberExchange('', state.response.text);
+      }
+    });
+  };
+
   window.nrviAsk = (question, done) => {
     const text = String(question || '').trim();
     if (!text) {
@@ -99,7 +145,7 @@
         audio: true,
         sessionId: window.nrviVoice?.getSessionId?.() || fallbackSessionId
       },
-      response => {
+      async response => {
         if (id !== requestId) return;
         busy = false;
         pendingDone = null;
@@ -112,10 +158,19 @@
           return;
         }
 
+        const navigationPending = (response.actions || []).some(isNavigationAction);
+        if (navigationPending) await prepareNavigation(response);
         (response.actions || []).forEach(runAction);
         history.push({ role: 'user', content: text }, { role: 'assistant', content: response.text });
         if (history.length > 12) history.splice(0, history.length - 12);
-        window.nrviVoice?.playResponse?.(response.text, response.audio, response.audioMimeType);
+        try {
+          sessionStorage.setItem(persistedHistoryKey, JSON.stringify(history));
+        } catch (error) {
+          console.warn('[NRVI] No se pudo conservar el historial:', error.message);
+        }
+        if (!navigationPending) {
+          window.nrviVoice?.playResponse?.(response.text, response.audio, response.audioMimeType);
+        }
         rememberExchange(text, response.text);
         done?.({ ok: true, text: response.text, actions: (response.actions || []).length });
       }
@@ -130,6 +185,8 @@
     window.nrviVoice?.stopSpeaking?.();
     done?.({ ok: false, error: 'Solicitud cancelada.' });
   };
+
+  restorePendingNavigation();
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== 'agent.ask.fromPopup') return false;

@@ -65,7 +65,33 @@ peticiones y respuestas se conservan en `server/logs/nrvi-conversations.log`.
 
 Durante la captura, la consola muestra cada segundo el RMS, el nivel de ruido
 estimado y el umbral de voz. El popup recibe esos mismos valores para observar
-si el micrófono está captando ruido ambiental.
+si el micrófono está captando ruido ambiental. La medición usa `AnalyserNode`;
+no usa `ScriptProcessorNode`, que está obsoleto.
+
+La escucha permanece activa durante la respuesta de Navi para permitir comandos
+como `detente`, `pausa` o una nueva pregunta. Se recomienda usar audífonos para
+evitar que la respuesta reproducida vuelva al micrófono. La sesión y el
+historial se conservan al navegar dentro de la misma pestaña, de modo que la
+llamada no se reinicia por una recarga o cambio de página.
+
+Los comandos locales no se envían al modelo conversacional, pero primero deben
+transcribirse con Groq Whisper para que el navegador pueda identificarlos. Por
+eso un límite de Groq que afecte al servicio de transcripción también puede
+impedir reconocer `detente` o `finalizar`. Las variantes `finaliza`,
+`finalizar`, `termina`, `cuelga` y sus formas con “la llamada” se reconocen
+localmente después de la transcripción.
+
+La transcripción usa Deepgram como proveedor principal (`DEEPGRAM_API_KEY`).
+Groq Whisper se conserva como fallback si Deepgram falla y `GROQ_API_KEY` está
+configurada. Groq continúa siendo el proveedor del modelo conversacional.
+
+Cuando una respuesta incluye un clic sobre un enlace, NRVI guarda la respuesta
+en el service worker antes de navegar. La nueva página consume esa respuesta
+y Navi la reproduce allí, evitando que el audio se corte durante la navegación.
+El popup conserva la última pregunta y respuesta mediante `chrome.storage`; no
+puede permanecer visualmente abierto porque el popup pertenece al documento
+anterior, pero la extensión intenta abrirlo automáticamente después de una
+navegación controlada cuando Brave permite `chrome.action.openPopup()`.
 
 El backend limita la salida de Groq para reducir el consumo de tokens por
 consulta (`GROQ_MAX_COMPLETION_TOKENS`, valor predeterminado: 700). Si Groq

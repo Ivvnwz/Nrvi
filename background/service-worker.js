@@ -23,10 +23,37 @@ function describeError(error) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!['agent.request', 'transcription.request', 'session.end'].includes(message.type)) return false;
+  if (!['agent.request', 'transcription.request', 'session.end', 'navigation.prepare', 'navigation.consume'].includes(message.type)) return false;
 
   (async () => {
     try {
+      if (message.type === 'navigation.prepare') {
+        const tabId = sender.tab?.id;
+        if (!tabId || !message.sessionId) throw new Error('No se pudo asociar la navegación con la sesión.');
+        await chrome.storage.session.set({
+          [`nrvi-navigation-${tabId}`]: {
+            sessionId: message.sessionId,
+            response: {
+              text: message.response?.text || '',
+              audioMimeType: message.response?.audioMimeType || null
+            },
+            history: message.history || [],
+            createdAt: Date.now()
+          }
+        });
+        sendResponse({ ok: true });
+        return;
+      }
+      if (message.type === 'navigation.consume') {
+        const tabId = sender.tab?.id;
+        const key = tabId ? `nrvi-navigation-${tabId}` : '';
+        const stored = key ? await chrome.storage.session.get(key) : {};
+        const pending = stored[key];
+        if (key) await chrome.storage.session.remove(key);
+        const validPending = pending && Date.now() - pending.createdAt < 60000 ? pending : null;
+        sendResponse({ ok: true, pending: validPending });
+        return;
+      }
       const backendUrl = await getBackendUrl();
       if (message.type === 'session.end') {
         const response = await fetchWithTimeout(`${backendUrl}/api/session/end`, {
@@ -97,6 +124,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   })();
 
   return true;
+});
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+  if (changeInfo.status !== 'complete') return;
+  const key = `nrvi-navigation-${tabId}`;
+  const stored = await chrome.storage.session.get(key);
+  if (!stored[key] || typeof chrome.action.openPopup !== 'function') return;
+  try {
+    await chrome.action.openPopup();
+  } catch {
+    void 0;
+  }
 });
 
 chrome.commands.onCommand.addListener(async command => {
