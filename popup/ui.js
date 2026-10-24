@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const checkHealthButton = document.getElementById('checkHealth');
   const micFill = document.getElementById('micFill');
   const micLevelText = document.getElementById('micLevelText');
+  const audioDiagnostics = document.getElementById('audioDiagnostics');
 
   const defaultBackend = 'http://localhost:3000';
 
@@ -48,6 +49,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const v = Math.max(0, Math.min(1, Number(level) || 0));
     micFill.style.width = `${Math.round(v * 100)}%`;
     micLevelText.textContent = `${Math.round(v * 100)}%`;
+  };
+
+  const setAudioDiagnostics = (noiseFloor, voiceThreshold) => {
+    if (typeof noiseFloor !== 'number' || typeof voiceThreshold !== 'number') return;
+    audioDiagnostics.textContent = `Ruido: ${Math.round(noiseFloor * 100)}% | Umbral: ${Math.round(voiceThreshold * 100)}%`;
   };
 
   renderVoiceButton(false);
@@ -122,6 +128,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         showVoiceState(response.state);
         renderVoiceButton(response.inCall);
         if (typeof response.micLevel === 'number') setMicLevel(response.micLevel);
+        setAudioDiagnostics(response.noiseFloor, response.voiceThreshold);
       });
     } catch {
       setVoiceState('inactivo', 'No pude consultar el estado de voz de esta página.');
@@ -203,10 +210,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       showVoiceState(message.state);
       renderVoiceButton(message.inCall);
       if (typeof message.micLevel === 'number') setMicLevel(message.micLevel);
+      setAudioDiagnostics(message.noiseFloor, message.voiceThreshold);
       return;
     }
     if (message.type === 'voice.miclevel') {
       if (typeof message.level === 'number') setMicLevel(message.level);
+      setAudioDiagnostics(message.noiseFloor, message.voiceThreshold);
       return;
     }
     if (message.type === 'voice.qa') {

@@ -8,16 +8,34 @@
   const REPEAT_COMMANDS = ['repite', 'repetir', 'otra vez', 'vuelve a explicarlo', 'que dijiste', 'que has dicho', 'repitemelo'];
   const SLOW_COMMANDS = ['mas despacio', 'habla mas despacio', 'explica mas despacio', 'explicamelo mas despacio', 'explicamelo de nuevo mas despacio'];
   const STOP_LISTENING_COMMANDS = ['deja de escuchar', 'para de escuchar', 'no escuches mas', 'deja de escucharme', 'termina', 'cuelga', 'colgar', 'termina la llamada'];
+  const PAUSE_PHRASES = ['pausa la respuesta', 'espera'];
+  const STOP_PHRASES = ['deten la respuesta', 'para la respuesta', 'cancela la respuesta'];
+  const INACTIVITY_TIMEOUT_MS = 7000;
+  const MIN_RECORDING_DURATION_MS = 250;
+  const MIN_AUDIO_BYTES = 1024;
+  const AUDIO_FALLBACK_MIN_DURATION_MS = 800;
+  const AUDIO_FALLBACK_MIN_BYTES = 4096;
+  const GREETING = 'Hola, soy Navi, tu asistente de navegación. ¿En qué puedo ayudarte?';
+  const FAREWELL = 'De acuerdo, hasta luego.';
 
   let recorder;
   let audioStream;
   let audioContext;
   let analyser;
+  let analyserSink;
+  let audioProcessor;
   let recorderMonitor;
+  let recognitionStarting = false;
   let audioChunks = [];
+  let audioBytes = 0;
   let speechDetected = false;
+  let recordingStartedAt = 0;
   let speechStartedAt = 0;
   let silenceStartedAt = 0;
+  let noiseFloor = 0.01;
+  let voiceThreshold = 0.05;
+  let noiseSamples = [];
+  let lastAudioDiagnosticsAt = 0;
   let mode = 'off';
   let active = false;
   let wakeWordEnabled = false;
@@ -28,8 +46,10 @@
   let currentAudio;
   let lastResponse;
   let spokenText = '';
+  let sessionId = null;
   let errorState = null;
   let errorTimer = null;
+  let inactivityTimer = null;
 
   let micLevel = 0;
   let meterTimer = null;
@@ -78,7 +98,18 @@
   };
 
   const broadcastState = () => {
-    const snapshot = { state: currentState(), error: errorState, wakeWordEnabled, inCall, active, processing, speaking, micLevel };
+    const snapshot = {
+      state: currentState(),
+      error: errorState,
+      wakeWordEnabled,
+      inCall,
+      active,
+      processing,
+      speaking,
+      micLevel,
+      noiseFloor,
+      voiceThreshold
+    };
     dispatchLocal('nrvi:state', snapshot);
     try {
       chrome.runtime.sendMessage({ type: 'voice.state', ...snapshot }, () => void chrome.runtime.lastError);
@@ -93,7 +124,12 @@
     if (rounded === lastSentLevel) return;
     lastSentLevel = rounded;
     try {
-      chrome.runtime.sendMessage({ type: 'voice.miclevel', level: micLevel }, () => void chrome.runtime.lastError);
+      chrome.runtime.sendMessage({
+        type: 'voice.miclevel',
+        level: micLevel,
+        noiseFloor,
+        voiceThreshold
+      }, () => void chrome.runtime.lastError);
     } catch {
       void 0;
     }
@@ -224,35 +260,65 @@
     broadcastMicLevel();
   };
 
-  const handleVoiceCommand = transcript => {
-    const command = normalize(transcript);
-    if (!command) return false;
+  const clearInactivityTimer = () => {
+    if (inactivityTimer) {
+      clearTimeout(inactivityTimer);
+      inactivityTimer = null;
+    }
+  };
 
-    if (STOP_COMMANDS.includes(command)) {
-      window.nrviCancel?.();
-      return true;
-    }
-    if (command === PAUSE_COMMAND) {
-      pauseSpeaking();
-      return true;
-    }
-    if (RESUME_COMMANDS.includes(command)) {
-      resumeSpeaking();
-      return true;
-    }
-    if (REPEAT_COMMANDS.includes(command)) {
-      replay();
-      return true;
-    }
-    if (SLOW_COMMANDS.includes(command)) {
-      replay({ slow: true });
-      return true;
-    }
-    if (STOP_LISTENING_COMMANDS.includes(command)) {
+  const armInactivityTimer = () => {
+    clearInactivityTimer();
+    inactivityTimer = setTimeout(() => {
+      inactivityTimer = null;
+      if (!inCall) return;
+      if (active || processing || speaking) {
+        armInactivityTimer();
+        return;
+      }
       endCall();
-      return true;
+    }, INACTIVITY_TIMEOUT_MS);
+  };
+
+  const startsWithPhrase = (value, phrases) => phrases.some(phrase => value === phrase || value.startsWith(`${phrase} `));
+
+  const classifyVoiceCommand = transcript => {
+    const command = normalize(transcript);
+    if (!command) return null;
+    if (STOP_LISTENING_COMMANDS.includes(command)) return 'end_call';
+    if (STOP_COMMANDS.includes(command) || startsWithPhrase(command, STOP_PHRASES)) return 'stop';
+    if (command === PAUSE_COMMAND || startsWithPhrase(command, PAUSE_PHRASES)) return 'pause';
+    if (RESUME_COMMANDS.includes(command)) return 'resume';
+    if (REPEAT_COMMANDS.includes(command)) return 'repeat';
+    if (SLOW_COMMANDS.includes(command)) return 'repeat_slow';
+    return null;
+  };
+
+  const executeVoiceCommand = command => {
+    if (!command) return false;
+    console.info('[NRVI] Comando local:', command);
+    switch (command) {
+      case 'stop':
+        window.nrviCancel?.();
+        return true;
+      case 'pause':
+        pauseSpeaking();
+        return true;
+      case 'resume':
+        resumeSpeaking();
+        return true;
+      case 'repeat':
+        replay();
+        return true;
+      case 'repeat_slow':
+        replay({ slow: true });
+        return true;
+      case 'end_call':
+        endCall();
+        return true;
+      default:
+        return false;
     }
-    return false;
   };
 
   const recorderMimeType = () => {
@@ -280,6 +346,7 @@
       }
       chrome.runtime.sendMessage({
         type: 'transcription.request',
+        sessionId,
         audioBase64: btoa(binary),
         mimeType: blob.type || 'audio/webm',
         fileName: 'nrvi.webm'
@@ -297,28 +364,35 @@
     const text = String(transcript || '').trim();
     if (!text) {
       processing = false;
-      if (inCall) startRecognition('call');
+      if (inCall) {
+        resumeRecognitionAfterSpeech();
+      }
       else sync();
       return;
     }
     console.info('[NRVI] Transcripción recibida:', text);
     broadcastTranscript(text, true);
-    if (handleVoiceCommand(text)) {
+    if (executeVoiceCommand(classifyVoiceCommand(text))) {
       processing = false;
-      if (inCall) startRecognition('call');
+      if (inCall) {
+        resumeRecognitionAfterSpeech();
+      }
       return;
     }
     const question = extractQuestion(text)?.trim() || text;
-    if (handleVoiceCommand(question)) {
+    if (executeVoiceCommand(classifyVoiceCommand(question))) {
       processing = false;
-      if (inCall) startRecognition('call');
+      if (inCall) {
+        resumeRecognitionAfterSpeech();
+      }
       return;
     }
     askQuestion(question);
   };
 
   const startRecognition = nextMode => {
-    if (processing || !inCall || typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;
+    if (processing || active || recognitionStarting || !inCall || typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;
+    clearInactivityTimer();
     if (document.visibilityState !== 'visible') {
       active = false;
       stopMeter();
@@ -326,28 +400,72 @@
       return;
     }
     mode = nextMode;
-    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    recognitionStarting = true;
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(async stream => {
       if (!inCall || processing) {
+        recognitionStarting = false;
         stream.getTracks().forEach(track => track.stop());
         return;
       }
+      recognitionStarting = false;
       audioStream = stream;
       audioContext = new AudioContext();
       analyser = audioContext.createAnalyser();
       analyser.fftSize = 512;
-      audioContext.createMediaStreamSource(stream).connect(analyser);
+      analyser.smoothingTimeConstant = 0;
+      const source = audioContext.createMediaStreamSource(stream);
+      analyserSink = audioContext.createGain();
+      analyserSink.gain.value = 0;
+      source.connect(analyser);
+      analyser.connect(analyserSink);
+      analyserSink.connect(audioContext.destination);
+      audioProcessor = audioContext.createScriptProcessor(1024, 1, 1);
+      audioProcessor.onaudioprocess = event => {
+        const channel = event.inputBuffer.getChannelData(0);
+        const sum = channel.reduce((total, sample) => total + sample * sample, 0);
+        audioProcessor.currentRms = Math.sqrt(sum / channel.length);
+      };
+      source.connect(audioProcessor);
+      audioProcessor.connect(analyserSink);
+      if (audioContext.state === 'suspended') await audioContext.resume();
+      const audioTrack = stream.getAudioTracks()[0];
+      console.info('[NRVI] AudioContext:', audioContext.state, {
+        track: audioTrack?.getSettings?.(),
+        enabled: audioTrack?.enabled,
+        muted: audioTrack?.muted,
+        readyState: audioTrack?.readyState,
+        sampleRate: audioContext.sampleRate
+      });
       const mimeType = recorderMimeType();
       recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       audioChunks = [];
+      audioBytes = 0;
       speechDetected = false;
+      recordingStartedAt = Date.now();
       speechStartedAt = 0;
       silenceStartedAt = 0;
+      noiseFloor = 0.01;
+      voiceThreshold = 0.05;
+      noiseSamples = [];
+      lastAudioDiagnosticsAt = 0;
       recorder.ondataavailable = event => {
-        if (event.data.size) audioChunks.push(event.data);
+        if (event.data.size) {
+          audioChunks.push(event.data);
+          audioBytes += event.data.size;
+        }
       };
       recorder.onstop = async () => {
         const chunks = audioChunks;
         const discard = recorder.__discard;
+        const recordingDuration = Date.now() - recordingStartedAt;
+        const fallbackSpeechDetected = audioBytes >= AUDIO_FALLBACK_MIN_BYTES
+          && recordingDuration >= AUDIO_FALLBACK_MIN_DURATION_MS;
+        console.info('[NRVI] Audio grabado:', {
+          durationMs: recordingDuration,
+          bytes: audioBytes,
+          rmsDetected: speechDetected,
+          fallbackDetected: fallbackSpeechDetected
+        });
         audioChunks = [];
         recorder = null;
         stream.getTracks().forEach(track => track.stop());
@@ -355,15 +473,23 @@
         audioContext?.close();
         audioContext = null;
         analyser = null;
+        analyserSink = null;
+        audioProcessor = null;
         stopMeter();
         active = false;
-        if (!chunks.length || discard) {
+        const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
+        if (
+          !chunks.length
+          || discard
+          || (!speechDetected && !fallbackSpeechDetected)
+          || recordingDuration < MIN_RECORDING_DURATION_MS
+          || blob.size < MIN_AUDIO_BYTES
+        ) {
           if (inCall && !processing) startRecognition('call');
           return;
         }
         processing = true;
         sync();
-        const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
         const result = await requestTranscription(blob);
         if (!result.ok) {
           processing = false;
@@ -372,34 +498,55 @@
         }
         processTranscript(result.text);
       };
-      recorder.start();
+      recorder.start(250);
       active = true;
       console.info('[NRVI] Grabación MediaRecorder iniciada:', mimeType || 'audio/webm');
       startMeter();
       sync();
-      const data = new Uint8Array(analyser.fftSize);
+      const data = new Float32Array(analyser.fftSize);
       recorderMonitor = setInterval(() => {
         if (!recorder || !analyser) return;
-        analyser.getByteTimeDomainData(data);
-        const rms = Math.sqrt(data.reduce((sum, value) => {
-          const sample = (value - 128) / 128;
-          return sum + sample * sample;
-        }, 0) / data.length);
+        analyser.getFloatTimeDomainData(data);
+        const analyserRms = Math.sqrt(data.reduce((sum, sample) => sum + sample * sample, 0) / data.length);
+        const rms = Math.max(analyserRms, audioProcessor?.currentRms || 0);
         bumpMic(Math.min(1, rms * 5));
         const now = Date.now();
-        if (rms > 0.035) {
+        if (noiseSamples.length < 60) {
+          noiseSamples.push(rms);
+          noiseFloor = noiseSamples.reduce((sum, sample) => sum + sample, 0) / noiseSamples.length;
+          voiceThreshold = Math.max(0.05, noiseFloor * 2.5);
+        }
+        if (now - lastAudioDiagnosticsAt >= 1000) {
+          console.info('[NRVI] Audio:', {
+            rms: Number(rms.toFixed(4)),
+            noiseFloor: Number(noiseFloor.toFixed(4)),
+            voiceThreshold: Number(voiceThreshold.toFixed(4)),
+            speechDetected,
+            trackEnabled: audioTrack?.enabled,
+            trackMuted: audioTrack?.muted,
+            trackState: audioTrack?.readyState
+          });
+          lastAudioDiagnosticsAt = now;
+        }
+        if (!speechDetected && !speaking && now - recordingStartedAt >= INACTIVITY_TIMEOUT_MS) {
+          stopRecorder();
+          return;
+        }
+        if (rms > voiceThreshold) {
           if (!speechDetected) speechStartedAt = now;
           speechDetected = true;
           silenceStartedAt = 0;
+          if (speaking) stopSpeaking();
         } else if (speechDetected) {
           silenceStartedAt ||= now;
         }
         if ((speechDetected && silenceStartedAt && now - silenceStartedAt > 1200)
-          || now - speechStartedAt > 15000) {
+          || (speechStartedAt && now - speechStartedAt > 15000)) {
           stopRecorder();
         }
       }, 100);
     }).catch(error => {
+      recognitionStarting = false;
       console.error('[NRVI] No se pudo acceder al micrófono:', error);
       wakeWordEnabled = false;
       inCall = false;
@@ -410,6 +557,16 @@
 
   const recognitionMode = () => (inCall ? 'call' : 'wake');
 
+  const resumeRecognitionAfterSpeech = () => {
+    if (!wakeWordEnabled || !inCall || processing) return;
+    if (speaking) {
+      setTimeout(resumeRecognitionAfterSpeech, 100);
+      return;
+    }
+    startRecognition(recognitionMode());
+    armInactivityTimer();
+  };
+
   const askQuestion = question => {
     processing = true;
     mode = 'off';
@@ -418,20 +575,26 @@
     sync();
     window.nrviAsk?.(question, () => {
       processing = false;
-      if (wakeWordEnabled) startRecognition(recognitionMode());
+      if (wakeWordEnabled) resumeRecognitionAfterSpeech();
       else sync();
     });
   };
 
   const stopWakeWord = () => {
+    const closingSessionId = sessionId;
     wakeWordEnabled = false;
     inCall = false;
+    sessionId = null;
     mode = 'off';
+    clearInactivityTimer();
     stopRecorder(true);
     audioStream?.getTracks().forEach(track => track.stop());
     audioStream = null;
     active = false;
     stopMeter();
+    if (closingSessionId) {
+      chrome.runtime.sendMessage({ type: 'session.end', sessionId: closingSessionId }, () => void chrome.runtime.lastError);
+    }
     sync();
   };
 
@@ -460,24 +623,28 @@
 
   const setCall = (enabled, initialQuestion) => {
     if (enabled) {
+      sessionId ||= `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       wakeWordEnabled = true;
       inCall = true;
       errorState = null;
       broadcastState();
-      if (initialQuestion) {
-        askQuestion(initialQuestion);
-      } else {
-        startRecognition('call');
-      }
+      speak(GREETING, {
+        onend: () => {
+          if (!inCall) return;
+          if (initialQuestion) askQuestion(initialQuestion);
+          else startRecognition('call');
+          armInactivityTimer();
+        }
+      });
       return true;
     }
+    if (inCall) speak(FAREWELL);
     inCall = false;
     stopWakeWord();
     return false;
   };
 
   const endCall = () => {
-    if (inCall) speak('De acuerdo, cuelgo.');
     setCall(false);
   };
 
@@ -490,6 +657,7 @@
     repeatLastResponse: replay,
     getState: currentState,
     getMicLevel: () => micLevel,
+    getSessionId: () => sessionId,
     isWakeWordEnabled: () => wakeWordEnabled,
     isInCall: () => inCall,
     setWakeWord,
@@ -501,7 +669,18 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'voice.getState') {
-      sendResponse({ ok: true, state: currentState(), wakeWordEnabled, inCall, active, processing, speaking, micLevel });
+      sendResponse({
+        ok: true,
+        state: currentState(),
+        wakeWordEnabled,
+        inCall,
+        active,
+        processing,
+        speaking,
+        micLevel,
+        noiseFloor,
+        voiceThreshold
+      });
       return false;
     }
     if (message.type === 'voice.setCall') {

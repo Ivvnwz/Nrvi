@@ -30,7 +30,8 @@ Groq Speech-to-Text (`whisper-large-v3-turbo`). Esto evita depender de
 disponible, se usa la voz del navegador.
 
 La grabación se mantiene en memoria durante una frase, con detección local de
-silencio y un límite de 15 segundos por frase. El audio se envía al backend
+silencio, cierre automático tras 7 segundos sin instrucciones y un límite de
+15 segundos por frase. El audio se envía al backend
 `/api/transcribe` y no se guarda en disco.
 
 Después carga la carpeta `Nrvi` como extensión descomprimida en `chrome://extensions`, recarga la extensión y las páginas que quieras probar.
@@ -49,6 +50,27 @@ se convierta en una nueva pregunta.
 - `más despacio` para repetir más despacio (fallback a TTS del navegador).
 
 El panel muestra la última pregunta y respuesta (también las dichas por voz) y las conserva al volver a abrirlo. La captura usa APIs estándar del navegador (`getUserMedia` y `MediaRecorder`), por lo que no depende del servicio remoto `SpeechRecognition`. En la consola de la página verás logs `[NRVI]` con los estados de captura, transcripción y errores.
+
+Las transcripciones pasan primero por un router local de comandos. `detente`,
+`cancela`, `pausa`, `reanuda`, `repite`, `más despacio` y `termina` controlan
+la sesión sin enviarse al modelo conversacional. Solo las frases que no
+coinciden con esos comandos se envían a `/api/agent`.
+
+Cada llamada crea un identificador de sesión. El registro operativo se guarda
+en `server/logs/nrvi.log` y solo se rota cada 5 minutos o cuando supera 2.000
+caracteres; no se borra al cerrar la llamada. Los errores y advertencias se
+conservan en `server/logs/nrvi-errors.log`; una misma firma de error dentro de
+una sesión se mantiene en una sola entrada y aumenta su contador. Las
+peticiones y respuestas se conservan en `server/logs/nrvi-conversations.log`.
+
+Durante la captura, la consola muestra cada segundo el RMS, el nivel de ruido
+estimado y el umbral de voz. El popup recibe esos mismos valores para observar
+si el micrófono está captando ruido ambiental.
+
+El backend limita la salida de Groq para reducir el consumo de tokens por
+consulta (`GROQ_MAX_COMPLETION_TOKENS`, valor predeterminado: 700). Si Groq
+responde con HTTP 429, NRVI informa el límite y evita nuevos envíos durante
+15 segundos.
 
 ## Fases recomendadas
 

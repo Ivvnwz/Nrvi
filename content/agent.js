@@ -6,6 +6,8 @@
   let busy = false;
   let requestId = 0;
   let pendingDone = null;
+  let rateLimitUntil = 0;
+  const fallbackSessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   const setNativeValue = (element, value) => {
     if (element.tagName === 'SELECT') {
@@ -69,6 +71,13 @@
       done?.({ ok: false, error: 'La pregunta está vacía.' });
       return;
     }
+    if (Date.now() < rateLimitUntil) {
+      const seconds = Math.ceil((rateLimitUntil - Date.now()) / 1000);
+      const message = `Groq está temporalmente limitado. Espera ${seconds} segundos antes de volver a preguntar.`;
+      window.nrviVoice?.speak?.(message);
+      done?.({ ok: false, error: message });
+      return;
+    }
     if (busy) {
       const message = 'Todavía estoy procesando la pregunta anterior.';
       window.nrviVoice?.speak?.(message);
@@ -82,7 +91,14 @@
     const context = window.nrviContext ? window.nrviContext() : {};
 
     chrome.runtime.sendMessage(
-      { type: 'agent.request', question: text, context, history, audio: true },
+      {
+        type: 'agent.request',
+        question: text,
+        context,
+        history,
+        audio: true,
+        sessionId: window.nrviVoice?.getSessionId?.() || fallbackSessionId
+      },
       response => {
         if (id !== requestId) return;
         busy = false;
@@ -90,6 +106,7 @@
 
         if (chrome.runtime.lastError || !response?.ok) {
           const message = response?.error || 'No pude conectar con NRVI.';
+          if (response?.status === 429) rateLimitUntil = Date.now() + 15000;
           window.nrviVoice?.speak?.(message);
           done?.({ ok: false, error: message });
           return;

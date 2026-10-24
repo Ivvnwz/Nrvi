@@ -3,7 +3,7 @@ import cors from 'cors';
 import express from 'express';
 import multer from 'multer';
 import { cleanModel, safeActions, buildMessages, fetchWithTimeout, DEFAULT_MODEL } from './lib.js';
-import { safeLogValue, writeLog } from './logger.js';
+import { endLogSession, safeLogValue, writeConversationLog, writeLog } from './logger.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -11,6 +11,7 @@ const groqTimeout = Number(process.env.GROQ_TIMEOUT_MS || 20000);
 const groqSttTimeout = Number(process.env.GROQ_STT_TIMEOUT_MS || 30000);
 const elevenTimeout = Number(process.env.ELEVENLABS_TIMEOUT_MS || 15000);
 const sttModel = process.env.GROQ_STT_MODEL || 'whisper-large-v3-turbo';
+const maxCompletionTokens = Number(process.env.GROQ_MAX_COMPLETION_TOKENS || 700);
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024, files: 1 }
@@ -56,14 +57,15 @@ app.use(cors({ origin: allowedOrigins?.length ? allowedOrigins : true }));
 app.use(express.json({ limit: '2mb' }));
 
 const systemPrompt = `Eres NRVI, una asistente amigable, empática y conversacional para una persona con discapacidad visual.
-Responde siempre en español y de forma clara, natural y breve. Entiende la página actual usando el contexto semántico.
+Responde siempre en español y de forma clara, natural y breve. No uses emojis ni emoticonos. Entiende la página actual usando el contexto semántico.
 Puedes resumir, conversar y guiar. Solo usa herramientas con IDs presentes en el contexto.
 No inventes controles. Para comprar, borrar, enviar formularios o acciones irreversibles, explica lo que ocurrirá y pide confirmación antes de actuar.`;
 
-async function chat(messages, useTools = true) {
+async function chat(messages, useTools = true, sessionId) {
   const model = cleanModel(process.env.GROQ_MODEL || DEFAULT_MODEL);
   await writeLog('info', 'provider.request', {
     provider: 'groq',
+    sessionId,
     model,
     useTools,
     messageCount: messages.length
@@ -80,6 +82,7 @@ async function chat(messages, useTools = true) {
       body: JSON.stringify({
         model,
         temperature: 0.25,
+        max_completion_tokens: maxCompletionTokens,
         messages,
         ...(useTools ? { tools, tool_choice: 'auto' } : {})
       })
@@ -87,6 +90,7 @@ async function chat(messages, useTools = true) {
   } catch (error) {
     await writeLog('error', 'provider.error', {
       provider: 'groq',
+      sessionId,
       error: error.message
     });
     throw new Error(error.name === 'AbortError' ? 'Groq tardó demasiado en responder.' : 'No se pudo contactar con Groq.');
@@ -102,6 +106,7 @@ async function chat(messages, useTools = true) {
     const errorMessage = data.error?.message || 'Groq rechazó la solicitud.';
     await writeLog('error', 'provider.response_error', {
       provider: 'groq',
+      sessionId,
       status: response.status,
       error: errorMessage
     });
@@ -109,6 +114,7 @@ async function chat(messages, useTools = true) {
   }
   await writeLog('info', 'provider.response', {
     provider: 'groq',
+    sessionId,
     status: response.status,
     hasToolCalls: Boolean(data.choices?.[0]?.message?.tool_calls),
     responseLength: safeLogValue(data.choices?.[0]?.message?.content || '').length
@@ -116,10 +122,11 @@ async function chat(messages, useTools = true) {
   return data.choices?.[0]?.message || {};
 }
 
-async function elevenLabs(text) {
+async function elevenLabs(text, sessionId) {
   if (!process.env.ELEVENLABS_API_KEY || !text) {
     await writeLog('info', 'provider.skipped', {
       provider: 'elevenlabs',
+      sessionId,
       reason: !text ? 'empty_text' : 'api_key_not_configured'
     });
     return null;
@@ -127,6 +134,7 @@ async function elevenLabs(text) {
   const voice = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
   await writeLog('info', 'provider.request', {
     provider: 'elevenlabs',
+    sessionId,
     voice,
     textLength: text.length
   });
@@ -139,6 +147,7 @@ async function elevenLabs(text) {
     if (!response.ok) {
       await writeLog(response.status === 402 ? 'warn' : 'error', 'provider.response_error', {
         provider: 'elevenlabs',
+        sessionId,
         status: response.status,
         error: response.status === 402 ? 'Cuota o saldo de ElevenLabs agotado; se usará la voz del navegador.' : undefined
       });
@@ -147,6 +156,7 @@ async function elevenLabs(text) {
     const audio = Buffer.from(await response.arrayBuffer()).toString('base64');
     await writeLog('info', 'provider.response', {
       provider: 'elevenlabs',
+      sessionId,
       status: response.status,
       audioLength: audio.length
     });
@@ -154,6 +164,7 @@ async function elevenLabs(text) {
   } catch (error) {
     await writeLog('error', 'provider.error', {
       provider: 'elevenlabs',
+      sessionId,
       error: error.message
     });
     return null;
@@ -171,20 +182,31 @@ app.get('/health', (_request, response) => {
 });
 
 app.post('/api/transcribe', upload.single('file'), async (request, response) => {
+  const sessionId = request.get('X-NRVI-Session') || undefined;
   if (!process.env.GROQ_API_KEY) {
     const error = 'Configura GROQ_API_KEY en server/.env.';
-    void writeLog('error', 'transcription.response_error', { status: 503, error });
+    void writeLog('error', 'transcription.response_error', { sessionId, status: 503, error });
     return response.status(503).json({ error });
   }
   if (!request.file?.buffer?.length) {
     const error = 'No se recibió audio para transcribir.';
-    void writeLog('error', 'transcription.response_error', { status: 400, error });
+    void writeLog('error', 'transcription.response_error', { sessionId, status: 400, error });
+    return response.status(400).json({ error });
+  }
+  if (request.file.size < 1024) {
+    const error = 'El audio recibido es demasiado corto para transcribirlo.';
+    void writeLog('warn', 'transcription.discarded', {
+      sessionId,
+      audioBytes: request.file.size,
+      error
+    });
     return response.status(400).json({ error });
   }
 
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   void writeLog('info', 'transcription.request', {
     requestId,
+    sessionId,
     provider: 'groq',
     model: sttModel,
     mimeType: request.file.mimetype,
@@ -213,6 +235,7 @@ app.post('/api/transcribe', upload.single('file'), async (request, response) => 
       const error = data.error?.message || 'Groq rechazó la transcripción.';
       await writeLog('error', 'transcription.provider_error', {
         requestId,
+        sessionId,
         provider: 'groq',
         status: providerResponse.status,
         error
@@ -223,46 +246,60 @@ app.post('/api/transcribe', upload.single('file'), async (request, response) => 
     const text = typeof data.text === 'string' ? data.text.trim() : '';
     await writeLog('info', 'transcription.response', {
       requestId,
+      sessionId,
       provider: 'groq',
       status: providerResponse.status,
       response: safeLogValue(text)
     });
     return response.json({ text });
   } catch (error) {
-    await writeLog('error', 'transcription.error', { requestId, error: error.message });
+    await writeLog('error', 'transcription.error', { requestId, sessionId, error: error.message });
     return response.status(502).json({
       error: error.name === 'AbortError' ? 'La transcripción tardó demasiado.' : 'No se pudo transcribir el audio.'
     });
   }
 });
 
+app.post('/api/session/end', async (request, response) => {
+  const sessionId = request.body?.sessionId;
+  await endLogSession(sessionId);
+  response.json({ ok: true });
+});
+
 app.post('/api/agent', async (request, response) => {
   const body = request.body || {};
   const { question, context, history = [], audio = true } = body;
+  const sessionId = body.sessionId;
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   void writeLog('info', 'agent.request', {
     requestId,
+    sessionId,
     question: safeLogValue(question || ''),
     contextLength: safeLogValue(context || {}).length,
     historyCount: Array.isArray(history) ? history.length : 0,
     audioRequested: audio !== false
   });
+  void writeConversationLog('conversation.request', {
+    sessionId,
+    requestId,
+    question: safeLogValue(question || '')
+  });
 
   if (!process.env.GROQ_API_KEY) {
     const error = 'Configura GROQ_API_KEY en server/.env.';
-    void writeLog('error', 'agent.response_error', { requestId, status: 503, error });
+    void writeLog('error', 'agent.response_error', { requestId, sessionId, status: 503, error });
     return response.status(503).json({ error });
   }
   if (typeof question !== 'string' || !question.trim()) {
     const error = 'La pregunta está vacía.';
-    void writeLog('error', 'agent.response_error', { requestId, status: 400, error });
+    void writeLog('error', 'agent.response_error', { requestId, sessionId, status: 400, error });
     return response.status(400).json({ error });
   }
 
   try {
     const messages = buildMessages({ systemPrompt, history, context, question });
-    const first = await chat(messages);
+    const first = await chat(messages, true, sessionId);
     let actions = [];
     let final = first;
 
@@ -270,27 +307,39 @@ app.post('/api/agent', async (request, response) => {
       actions = safeActions(first.tool_calls);
       messages.push(first);
       first.tool_calls.forEach(call => messages.push({ role: 'tool', tool_call_id: call.id, content: 'Acción preparada para ejecutarse en la página.' }));
-      final = await chat(messages, false);
+      final = await chat(messages, false, sessionId);
     }
 
     const text = final.content?.trim() || 'He preparado la acción solicitada.';
-    const audioBase64 = audio ? await elevenLabs(text) : null;
+    const audioBase64 = audio ? await elevenLabs(text, sessionId) : null;
     void writeLog('info', 'agent.response', {
       requestId,
+      sessionId,
       status: 200,
       response: safeLogValue(text),
       actionCount: actions.length,
       audioIncluded: Boolean(audioBase64)
     });
+    void writeConversationLog('conversation.response', {
+      sessionId,
+      requestId,
+      response: safeLogValue(text)
+    });
     response.json({ text, actions, audio: audioBase64, audioMimeType: audioBase64 ? 'audio/mpeg' : null });
   } catch (error) {
     console.error('NRVI agent error:', error.message);
+    const isRateLimit = /rate limit|too many requests|TPM/i.test(error.message || '');
+    const status = isRateLimit ? 429 : 502;
+    const publicError = isRateLimit
+      ? 'Groq alcanzó temporalmente el límite de uso. Espera unos segundos antes de volver a preguntar.'
+      : error.message || 'Error del agente.';
     void writeLog('error', 'agent.response_error', {
       requestId,
-      status: 502,
+      sessionId,
+      status,
       error: error.message
     });
-    response.status(502).json({ error: error.message || 'Error del agente.' });
+    response.status(status).json({ error: publicError });
   }
 });
 

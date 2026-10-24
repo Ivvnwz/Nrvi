@@ -23,11 +23,20 @@ function describeError(error) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!['agent.request', 'transcription.request'].includes(message.type)) return false;
+  if (!['agent.request', 'transcription.request', 'session.end'].includes(message.type)) return false;
 
   (async () => {
     try {
       const backendUrl = await getBackendUrl();
+      if (message.type === 'session.end') {
+        const response = await fetchWithTimeout(`${backendUrl}/api/session/end`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: message.sessionId })
+        }, REQUEST_TIMEOUT_MS);
+        sendResponse({ ok: response.ok });
+        return;
+      }
       if (message.type === 'transcription.request') {
         const form = new FormData();
         if (typeof message.audioBase64 !== 'string' || !message.audioBase64) {
@@ -40,6 +49,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         form.append('file', audio, message.fileName || 'nrvi.webm');
         const response = await fetchWithTimeout(`${backendUrl}/api/transcribe`, {
           method: 'POST',
+          headers: { 'X-NRVI-Session': message.sessionId || '' },
           body: form
         }, REQUEST_TIMEOUT_MS);
         let data = {};
@@ -48,7 +58,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         } catch {
           data = {};
         }
-        if (!response.ok) throw new Error(data.error || `El backend respondió ${response.status}.`);
+        if (!response.ok) {
+          const error = new Error(data.error || `El backend respondió ${response.status}.`);
+          error.status = response.status;
+          throw error;
+        }
         sendResponse({ ok: true, ...data });
         return;
       }
@@ -60,7 +74,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           question: message.question,
           context: message.context,
           history: message.history || [],
-          audio: message.audio !== false
+          audio: message.audio !== false,
+          sessionId: message.sessionId
         })
       }, REQUEST_TIMEOUT_MS);
 
@@ -70,10 +85,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } catch {
         data = {};
       }
-      if (!response.ok) throw new Error(data.error || `El backend respondió ${response.status}.`);
+      if (!response.ok) {
+        const error = new Error(data.error || `El backend respondió ${response.status}.`);
+        error.status = response.status;
+        throw error;
+      }
       sendResponse({ ok: true, ...data });
     } catch (error) {
-      sendResponse({ ok: false, error: describeError(error) });
+      sendResponse({ ok: false, status: error.status, error: describeError(error) });
     }
   })();
 
