@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const answer = document.getElementById('answer');
   const connectionStatus = document.getElementById('connectionStatus');
   const voiceButton = document.getElementById('listen');
+  const wakeWordButton = document.getElementById('wakeWord');
   const voiceStateLabel = document.getElementById('voiceStateLabel');
   const voiceStateHint = document.getElementById('voiceStateHint');
   const askButton = document.getElementById('ask');
@@ -102,6 +103,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     voiceButton.setAttribute('aria-pressed', String(Boolean(inCall)));
   }
 
+  function renderWakeWordButton(enabled) {
+    wakeWordButton.textContent = enabled ? 'Desactivar palabra «NAVI»' : 'Activar palabra «NAVI»';
+    wakeWordButton.setAttribute('aria-pressed', String(Boolean(enabled)));
+  }
+
   const voiceStateHints = {
     idle: 'Pulsa «Iniciar llamada» o di «Navi».',
     standby: 'Esperando la palabra «Navi».',
@@ -127,6 +133,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         showVoiceState(response.state);
         renderVoiceButton(response.inCall);
+        renderWakeWordButton(response.wakeWordEnabled);
         if (typeof response.micLevel === 'number') setMicLevel(response.micLevel);
         setAudioDiagnostics(response.noiseFloor, response.voiceThreshold);
       });
@@ -301,6 +308,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     renderVoiceButton(result.response.inCall);
     queryVoiceState(tab.id);
+  });
+
+  wakeWordButton.addEventListener('click', async () => {
+    const tab = await getActiveTab();
+    if (!tab?.id) return;
+    const enabled = wakeWordButton.getAttribute('aria-pressed') !== 'true';
+    if (!await updateVoiceScript(tab.id)) {
+      setVoiceState('error', 'NRVI no puede ejecutarse en esta página.');
+      return;
+    }
+    chrome.tabs.sendMessage(tab.id, { type: 'voice.setWakeWord', enabled }, response => {
+      if (chrome.runtime.lastError || !response?.ok) {
+        setVoiceState('error', 'No se pudo configurar la palabra NAVI.');
+        return;
+      }
+      renderWakeWordButton(enabled);
+      queryVoiceState(tab.id);
+    });
   });
 
   const tab = await getActiveTab();

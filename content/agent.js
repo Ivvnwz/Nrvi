@@ -4,6 +4,7 @@
 
   const history = [];
   const persistedHistoryKey = 'nrvi-conversation-history';
+  const pendingNavigationKey = 'nrvi-navigation-pending';
   let busy = false;
   let requestId = 0;
   let pendingDone = null;
@@ -80,6 +81,11 @@
   };
 
   const prepareNavigation = response => new Promise(resolve => {
+    try {
+      sessionStorage.setItem(pendingNavigationKey, 'true');
+    } catch (error) {
+      console.warn('[NRVI] No se pudo marcar la navegación pendiente:', error.message);
+    }
     chrome.runtime.sendMessage({
       type: 'navigation.prepare',
       sessionId: window.nrviVoice?.getSessionId?.() || fallbackSessionId,
@@ -94,8 +100,14 @@
 
   const restorePendingNavigation = () => {
     chrome.runtime.sendMessage({ type: 'navigation.consume' }, pending => {
-      if (chrome.runtime.lastError || !pending?.pending) return;
+      if (chrome.runtime.lastError || !pending?.pending) {
+        try { sessionStorage.removeItem(pendingNavigationKey); } catch { void 0; }
+        window.nrviVoice?.resumeRecognition?.();
+        return;
+      }
+      try { sessionStorage.removeItem(pendingNavigationKey); } catch { void 0; }
       const state = pending.pending;
+      window.nrviVoice?.restoreSession?.(state.sessionId);
       if (Array.isArray(state.history)) {
         history.splice(0, history.length, ...state.history.slice(-12));
         try {
@@ -105,8 +117,20 @@
         }
       }
       if (state.response) {
-        window.nrviVoice?.playResponse?.(state.response.text, state.response.audio, state.response.audioMimeType);
+        window.nrviVoice?.playResponse?.(
+          state.response.text,
+          state.response.audio,
+          state.response.audioMimeType,
+          1,
+          () => {
+            window.nrviVoice?.armInactivityTimer?.();
+            window.nrviVoice?.resumeRecognition?.();
+          }
+        );
         rememberExchange('', state.response.text);
+      } else {
+        window.nrviVoice?.armInactivityTimer?.();
+        window.nrviVoice?.resumeRecognition?.();
       }
     });
   };
@@ -120,13 +144,17 @@
     if (Date.now() < rateLimitUntil) {
       const seconds = Math.ceil((rateLimitUntil - Date.now()) / 1000);
       const message = `Groq está temporalmente limitado. Espera ${seconds} segundos antes de volver a preguntar.`;
-      window.nrviVoice?.speak?.(message);
+      window.nrviVoice?.speak?.(message, {
+        onend: () => window.nrviVoice?.resumeRecognition?.()
+      });
       done?.({ ok: false, error: message });
       return;
     }
     if (busy) {
       const message = 'Todavía estoy procesando la pregunta anterior.';
-      window.nrviVoice?.speak?.(message);
+      window.nrviVoice?.speak?.(message, {
+        onend: () => window.nrviVoice?.resumeRecognition?.()
+      });
       done?.({ ok: false, error: message });
       return;
     }
@@ -153,7 +181,9 @@
         if (chrome.runtime.lastError || !response?.ok) {
           const message = response?.error || 'No pude conectar con NRVI.';
           if (response?.status === 429) rateLimitUntil = Date.now() + 15000;
-          window.nrviVoice?.speak?.(message);
+          window.nrviVoice?.speak?.(message, {
+            onend: () => window.nrviVoice?.resumeRecognition?.()
+          });
           done?.({ ok: false, error: message });
           return;
         }
@@ -169,7 +199,13 @@
           console.warn('[NRVI] No se pudo conservar el historial:', error.message);
         }
         if (!navigationPending) {
-          window.nrviVoice?.playResponse?.(response.text, response.audio, response.audioMimeType);
+          window.nrviVoice?.playResponse?.(
+            response.text,
+            response.audio,
+            response.audioMimeType,
+            1,
+            () => window.nrviVoice?.resumeRecognition?.()
+          );
         }
         rememberExchange(text, response.text);
         done?.({ ok: true, text: response.text, actions: (response.actions || []).length });

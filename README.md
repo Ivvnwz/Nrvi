@@ -44,6 +44,10 @@ Mientras NRVI responde, la captura se pausa para evitar que el audio de salida
 se convierta en una nueva pregunta.
 
 - Para activar la llamada: pulsa **Iniciar llamada** en el panel.
+- Para activar la escucha por palabra clave: pulsa **Activar palabra «NAVI»**
+  en el panel y di `NAVI` seguido de una pregunta.
+- El modo de espera queda activado por defecto cuando no existe una llamada
+  activa. El navegador debe conceder permiso de micrófono a la página.
 - Para colgar: di `cuelga`, `termina`, `deja de escuchar` (o usa el botón del panel).
 - Durante la respuesta: `detente`, `para`, `cancela` (detiene audio). `pausa` para pausar. `reanuda`/`continua` para reanudar.
 - `repite` / `otra vez` / `¿qué dijiste?` para repetir la última respuesta.
@@ -55,6 +59,15 @@ Las transcripciones pasan primero por un router local de comandos. `detente`,
 `cancela`, `pausa`, `reanuda`, `repite`, `más despacio` y `termina` controlan
 la sesión sin enviarse al modelo conversacional. Solo las frases que no
 coinciden con esos comandos se envían a `/api/agent`.
+
+La palabra clave usa el diccionario local `WAKE_WORD_DICTIONARY` y acepta
+`navi`, `nabi`, `naby`, `navy`, `nave`, `nabhi` y la forma `navi asistente`.
+En modo espera, las frases que no contienen una variante válida se descartan
+localmente y no se envían al modelo.
+Actualmente el modo de espera usa ventanas breves de `MediaRecorder` y
+transcripción mediante Deepgram. Es compatible con el prototipo, pero consume
+solicitudes de STT; para producción conviene añadir VAD local y un detector de
+palabra clave local antes de enviar audio a la nube.
 
 Cada llamada crea un identificador de sesión. El registro operativo se guarda
 en `server/logs/nrvi.log` y solo se rota cada 5 minutos o cuando supera 2.000
@@ -87,7 +100,9 @@ configurada. Groq continúa siendo el proveedor del modelo conversacional.
 
 Cuando una respuesta incluye un clic sobre un enlace, NRVI guarda la respuesta
 en el service worker antes de navegar. La nueva página consume esa respuesta
-y Navi la reproduce allí, evitando que el audio se corte durante la navegación.
+y Navi la reproduce allí, restaurando explícitamente `inCall` y el `sessionId`
+antes de reproducirla para evitar que el popup muestre «Iniciar llamada» o que
+la nueva página cierre la sesión durante esa respuesta.
 El popup conserva la última pregunta y respuesta mediante `chrome.storage`; no
 puede permanecer visualmente abierto porque el popup pertenece al documento
 anterior, pero la extensión intenta abrirlo automáticamente después de una
