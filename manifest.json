@@ -19,12 +19,15 @@
   },
   "content_scripts": [{
     "matches": ["<all_urls>"],
-    "js": ["vendor/opencv.js", "content/context.js", "content/vision.js", "content/voice.js", "content/agent.js", "content/overlay.js"],
+    "js": ["content/context.js", "content/vision.js", "content/voice.js", "content/agent.js", "content/overlay.js"],
     "run_at": "document_idle"
   }],
   "web_accessible_resources": [{
-    "resources": ["vendor/haarcascade_frontalface_default.xml"],
+    "resources": ["sandbox/vision.html", "sandbox/vision.js", "vendor/face-api/*", "vendor/mediapipe-hands/*"],
     "matches": ["<all_urls>"]
   }],
+  "sandbox": {
+    "pages": ["sandbox/vision.html"]
+  },
   "minimum_chrome_version": "116"
 }

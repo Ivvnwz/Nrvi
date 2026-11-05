@@ -87,20 +87,40 @@ respuesta reproducida vuelva al micrófono. La sesión y el historial se
 conservan al navegar dentro de la misma pestaña, de modo que la llamada no se
 reinicia por una recarga o cambio de página.
 
-Durante la respuesta, una interrupción conversacional debe comenzar por
-`NAVI` (incluidas sus variantes). `NAVI, detente` y `NAVI, pausa` se procesan
-localmente; `NAVI, pregunta` detiene la reproducción y envía la pregunta al
-agente. `finaliza la llamada` y `cuelga` siguen siendo comandos de emergencia
-reconocidos sin la palabra clave.
+Durante la respuesta, una pregunta conversacional debe comenzar por `NAVI`
+(incluidas sus variantes). `NAVI, pregunta` detiene la reproducción y envía la
+pregunta al agente. Los comandos locales exactos como `detente`, `pausa`,
+`reanuda`, `repite`, `finaliza la llamada` y `cuelga` siguen funcionando sin
+la palabra clave.
 
-La extensión incluye OpenCV.js local en `vendor/opencv.js` y el clasificador
-facial en `vendor/haarcascade_frontalface_default.xml`. Cuando el modo NAVI
-está habilitado, la cámara detecta presencia facial sin enviar imágenes al
-backend. Si no hay rostro durante 7 segundos, se pausa el standby; cuando el
-rostro vuelve, la escucha de NAVI se reactiva. La ausencia facial no finaliza
-una llamada activa. La detección experimental de manos usa la zona inferior
-del vídeo: un puño estable durante 2 segundos pausa la voz y una mano abierta
-estable durante 2 segundos la reanuda.
+La extensión incluye el detector facial Tiny Face Detector de `face-api.js` y
+sus pesos locales en `vendor/face-api`. Cuando el modo NAVI está habilitado,
+la cámara detecta presencia facial sin enviar imágenes al backend. Si no hay
+rostro durante 7 segundos, se pausa el standby; cuando el rostro vuelve, la
+escucha de NAVI se reactiva. La ausencia facial no finaliza una llamada activa.
+
+Debido a la política CSP de las extensiones MV3, el detector se ejecuta en
+`sandbox/vision.html`, no directamente en el script de contenido. El contenido
+envía frames locales al sandbox y recibe únicamente los rectángulos detectados;
+ningún vídeo se envía al backend. La cámara es una capacidad secundaria: si el
+detector tarda o no encuentra un rostro, la escucha de la palabra `NAVI` no se
+bloquea.
+
+La cámara no se inicia automáticamente al abrir una página. Se inicia al
+activar explícitamente la palabra `NAVI`, iniciar una llamada o pulsar
+**Mostrar cámara**. Ocultarla solo cambia su visibilidad y permite volver a
+mostrarla desde el popup.
+
+Los marcadores faciales usan el modelo local de 68 puntos de `face-api.js`.
+Los marcadores de mano usan MediaPipe Hands local y muestran sus 21 puntos
+(incluidos los cinco dedos). La clasificación de puño/mano abierta sigue
+siendo una regla local sobre esos puntos y requiere buena iluminación.
+
+El popup incluye **Mostrar cámara** y **Mostrar marcadores**. La vista de
+cámara muestra el resultado actual de la detección; los marcadores dibujan el
+rectángulo y puntos de referencia del rostro y el área detectada de la mano.
+Los marcadores son una visualización de las detecciones de OpenCV, no un
+modelo de landmarks faciales de precisión.
 
 Los comandos locales no se envían al modelo conversacional, pero primero deben
 transcribirse con Groq Whisper para que el navegador pueda identificarlos. Por

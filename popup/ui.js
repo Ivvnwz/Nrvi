@@ -5,6 +5,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const connectionStatus = document.getElementById('connectionStatus');
   const voiceButton = document.getElementById('listen');
   const wakeWordButton = document.getElementById('wakeWord');
+  const cameraPreviewButton = document.getElementById('cameraPreview');
+  const cameraLandmarksButton = document.getElementById('cameraLandmarks');
   const voiceStateLabel = document.getElementById('voiceStateLabel');
   const voiceStateHint = document.getElementById('voiceStateHint');
   const askButton = document.getElementById('ask');
@@ -58,6 +60,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   };
 
   renderVoiceButton(false);
+  renderCameraPreviewButton(false);
+  renderCameraLandmarksButton(false);
   setMicLevel(0);
 
   const escapeHtml = text => String(text).replace(/[&<>"']/g, c => ({
@@ -78,7 +82,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
-        files: ['vendor/opencv.js', 'content/context.js', 'content/vision.js', 'content/voice.js', 'content/agent.js', 'content/overlay.js']
+        files: ['content/context.js', 'content/vision.js', 'content/voice.js', 'content/agent.js', 'content/overlay.js']
       });
       return true;
     } catch {
@@ -108,6 +112,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     wakeWordButton.setAttribute('aria-pressed', String(Boolean(enabled)));
   }
 
+  function renderCameraPreviewButton(visible) {
+    cameraPreviewButton.textContent = visible ? 'Ocultar cámara' : 'Mostrar cámara';
+    cameraPreviewButton.setAttribute('aria-pressed', String(Boolean(visible)));
+  }
+
+  function renderCameraLandmarksButton(visible) {
+    cameraLandmarksButton.textContent = visible ? 'Ocultar marcadores' : 'Mostrar marcadores';
+    cameraLandmarksButton.setAttribute('aria-pressed', String(Boolean(visible)));
+  }
+
   const voiceStateHints = {
     idle: 'Pulsa «Iniciar llamada» o di «Navi».',
     standby: 'Esperando la palabra «Navi».',
@@ -130,6 +144,15 @@ document.addEventListener('DOMContentLoaded', async () => {
           setVoiceState('inactivo', 'NRVI no está disponible en esta página. Abre una página web normal.');
           renderVoiceButton(false);
           return;
+        }
+
+        function queryVisionState(tabId) {
+          if (!tabId) return;
+          chrome.tabs.sendMessage(tabId, { type: 'vision.getState' }, response => {
+            if (chrome.runtime.lastError || !response?.ok) return;
+            renderCameraPreviewButton(Boolean(response.previewVisible));
+            renderCameraLandmarksButton(Boolean(response.landmarksVisible));
+          });
         }
         showVoiceState(response.state);
         renderVoiceButton(response.inCall);
@@ -326,11 +349,49 @@ document.addEventListener('DOMContentLoaded', async () => {
       renderWakeWordButton(enabled);
       queryVoiceState(tab.id);
     });
+
+  });
+
+  cameraPreviewButton.addEventListener('click', async () => {
+    const tab = await getActiveTab();
+    if (!tab?.id) return;
+    if (!await updateVoiceScript(tab.id)) {
+      setVoiceState('error', 'NRVI no puede ejecutarse en esta página.');
+      return;
+    }
+    const visible = cameraPreviewButton.getAttribute('aria-pressed') !== 'true';
+    chrome.tabs.sendMessage(tab.id, { type: 'vision.setPreview', visible }, response => {
+      if (chrome.runtime.lastError || !response?.ok) {
+        setVoiceState('error', response?.error || 'No se pudo iniciar la cámara.');
+        return;
+      }
+      renderCameraPreviewButton(response.visible);
+      chrome.storage.local.set({ cameraPreviewVisible: Boolean(response.visible) });
+    });
+  });
+
+  cameraLandmarksButton.addEventListener('click', async () => {
+    const tab = await getActiveTab();
+    if (!tab?.id) return;
+    if (!await updateVoiceScript(tab.id)) {
+      setVoiceState('error', 'NRVI no puede ejecutarse en esta página.');
+      return;
+    }
+    const visible = cameraLandmarksButton.getAttribute('aria-pressed') !== 'true';
+    chrome.tabs.sendMessage(tab.id, { type: 'vision.setLandmarks', visible }, response => {
+      if (chrome.runtime.lastError || !response?.ok) {
+        setVoiceState('error', 'No se pudieron cambiar los marcadores de cámara.');
+        return;
+      }
+      renderCameraLandmarksButton(response.visible);
+      chrome.storage.local.set({ cameraLandmarksVisible: Boolean(response.visible) });
+    });
   });
 
   const tab = await getActiveTab();
   if (tab?.id) {
     await queryVoiceState(tab.id);
+    queryVisionState(tab.id);
     await healthCheck();
   }
 });

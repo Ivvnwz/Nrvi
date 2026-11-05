@@ -55,6 +55,7 @@
   let wakeWordPreferenceEnabled = false;
   let facePresenceEnabled = true;
   let facePresent = false;
+  let faceWasDetected = false;
   let faceAbsenceTimer = null;
   let inCall = false;
   let processing = false;
@@ -328,6 +329,7 @@
     }
     facePresent = Boolean(present);
     if (facePresent) {
+      faceWasDetected = true;
       clearFaceAbsenceTimer();
       if (wakeWordPreferenceEnabled && !inCall) {
         wakeListeningEnabled = true;
@@ -337,7 +339,7 @@
       }
       return;
     }
-    if (!inCall && wakeWordPreferenceEnabled) {
+    if (!inCall && wakeWordPreferenceEnabled && faceWasDetected) {
       clearFaceAbsenceTimer();
       faceAbsenceTimer = setTimeout(() => {
         faceAbsenceTimer = null;
@@ -506,15 +508,19 @@
     processing = false;
     const text = String(transcript || '').trim();
     const command = classifyVoiceCommand(text);
-    if (command === 'end_call') {
+    if (command) {
       executeVoiceCommand(command);
-      stopRecorder(true);
+      stopRecorder(true, false);
+      setTimeout(restartRecognitionAfterInterruption, 150);
       return;
     }
     const question = extractQuestion(text);
     if (question === null) {
-      if (!speaking && wakeListeningEnabled) {
-        setTimeout(() => resumeRecognitionAfterSpeech(), 0);
+      if (wakeListeningEnabled) {
+        setTimeout(() => {
+          if (speaking) resumeInterruptionRecognition();
+          else resumeRecognitionAfterSpeech();
+        }, 0);
       }
       return;
     }
@@ -522,7 +528,8 @@
     const wakeCommand = classifyVoiceCommand(wakeQuestion);
     if (wakeCommand) {
       executeVoiceCommand(wakeCommand);
-      stopRecorder(true);
+      stopRecorder(true, false);
+      setTimeout(restartRecognitionAfterInterruption, 150);
       return;
     }
     if (wakeQuestion && speaking) {
@@ -530,14 +537,17 @@
       askQuestion(wakeQuestion);
       return;
     }
-    if (!speaking && wakeListeningEnabled) {
-      setTimeout(() => resumeRecognitionAfterSpeech(), 0);
+    if (wakeListeningEnabled) {
+      setTimeout(() => {
+        if (speaking) resumeInterruptionRecognition();
+        else resumeRecognitionAfterSpeech();
+      }, 0);
     }
   };
 
   const startRecognition = nextMode => {
     if ((processing && nextMode !== 'interrupt') || active || recognitionStarting
-      || (nextMode === 'wake' && (!wakeListeningEnabled || (facePresenceEnabled && !facePresent)))
+      || (nextMode === 'wake' && !wakeListeningEnabled)
       || (nextMode !== 'wake' && !inCall && !wakeListeningEnabled)
       || typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;
     clearInactivityTimer();
@@ -579,7 +589,17 @@
         sampleRate: audioContext.sampleRate
       });
       const mimeType = recorderMimeType();
-      recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      const recorderInstance = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      recorderInstance.__mode = nextMode;
+      recorder = recorderInstance;
+      const recording = {
+        chunks: [],
+        bytes: 0,
+        startedAt: Date.now(),
+        speechDetected: false,
+        speechStartedAt: 0,
+        silenceStartedAt: 0
+      };
       audioChunks = [];
       audioBytes = 0;
       speechDetected = false;
@@ -590,28 +610,28 @@
       voiceThreshold = 0.05;
       noiseSamples = [];
       lastAudioDiagnosticsAt = 0;
-      recorder.ondataavailable = event => {
+      recorderInstance.ondataavailable = event => {
         if (event.data.size) {
-          audioChunks.push(event.data);
-          audioBytes += event.data.size;
+          recording.chunks.push(event.data);
+          recording.bytes += event.data.size;
         }
       };
-      recorder.onstop = async () => {
-        const chunks = audioChunks;
-        const discard = recorder.__discard;
-        const resumeAfterDiscard = recorder.__resumeAfterDiscard !== false;
-        const recordedMode = mode;
-        const recordingDuration = Date.now() - recordingStartedAt;
-        const fallbackSpeechDetected = audioBytes >= AUDIO_FALLBACK_MIN_BYTES
+      recorderInstance.onstop = async () => {
+        const chunks = recording.chunks;
+        const discard = recorderInstance?.__discard;
+        const resumeAfterDiscard = recorderInstance?.__resumeAfterDiscard !== false;
+        const recordedMode = recorderInstance?.__mode || nextMode;
+        const recordingDuration = Date.now() - recording.startedAt;
+        const fallbackSpeechDetected = recording.bytes >= AUDIO_FALLBACK_MIN_BYTES
           && recordingDuration >= AUDIO_FALLBACK_MIN_DURATION_MS;
         console.info('[NRVI] Audio grabado:', {
           durationMs: recordingDuration,
-          bytes: audioBytes,
-          rmsDetected: speechDetected,
+          bytes: recording.bytes,
+          rmsDetected: recording.speechDetected,
           fallbackDetected: fallbackSpeechDetected
         });
+        if (recorder === recorderInstance) recorder = null;
         audioChunks = [];
-        recorder = null;
         stream.getTracks().forEach(track => track.stop());
         audioStream = null;
         audioContext?.close();
@@ -619,18 +639,23 @@
         analyser = null;
         analyserSink = null;
         stopMeter();
-        active = false;
+        if (recorder === null) active = false;
+        processing = false;
+        sync();
         const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
         if (
           !chunks.length
           || discard
-          || (!speechDetected && !fallbackSpeechDetected)
+          || (!recording.speechDetected && !fallbackSpeechDetected)
           || recordingDuration < MIN_RECORDING_DURATION_MS
           || blob.size < MIN_AUDIO_BYTES
         ) {
           if (recordedMode === 'interrupt') {
-            if (resumeAfterDiscard && !speaking && wakeListeningEnabled) {
-              setTimeout(() => resumeRecognitionAfterSpeech(), 0);
+            if (resumeAfterDiscard && wakeListeningEnabled) {
+              setTimeout(() => {
+                if (speaking) resumeInterruptionRecognition();
+                else resumeRecognitionAfterSpeech();
+              }, 0);
             }
           } else if (inCall && !processing) endCall();
           else if (wakeListeningEnabled && !processing) startRecognition('wake');
@@ -650,7 +675,7 @@
         }
         processTranscript(result.text);
       };
-      recorder.start(250);
+      recorderInstance.start(250);
       active = true;
       console.info('[NRVI] Grabación MediaRecorder iniciada:', mimeType || 'audio/webm');
       startMeter();
@@ -684,15 +709,21 @@
           return;
         }
         if (rms > voiceThreshold) {
-          if (!speechDetected) speechStartedAt = now;
+          if (!recording.speechDetected) {
+            speechStartedAt = now;
+            recording.speechStartedAt = now;
+          }
           speechDetected = true;
+          recording.speechDetected = true;
           silenceStartedAt = 0;
-          if (speaking && mode !== 'interrupt') stopSpeaking();
+          recording.silenceStartedAt = 0;
+          if (speaking && nextMode !== 'interrupt') stopSpeaking();
         } else if (speechDetected) {
           silenceStartedAt ||= now;
+          recording.silenceStartedAt ||= now;
         }
-        if ((speechDetected && silenceStartedAt && now - silenceStartedAt > 1200)
-          || (speechStartedAt && now - speechStartedAt > 15000)) {
+        if ((recording.speechDetected && recording.silenceStartedAt && now - recording.silenceStartedAt > 1200)
+          || (recording.speechStartedAt && now - recording.speechStartedAt > 15000)) {
           stopRecorder();
         }
       }, 100);
@@ -707,6 +738,28 @@
   };
 
   const recognitionMode = () => (inCall ? 'call' : 'wake');
+
+  const resumeInterruptionRecognition = () => {
+    if (!wakeListeningEnabled || processing || !speaking) return;
+    startRecognition('interrupt');
+  };
+
+  const restartRecognitionAfterInterruption = (attempt = 0) => {
+    if ((recorder || active) && attempt < 10) {
+      setTimeout(() => restartRecognitionAfterInterruption(attempt + 1), 150);
+      return;
+    }
+    processing = false;
+    active = false;
+    recognitionStarting = false;
+    sync();
+    if (inCall) {
+      resumeRecognitionAfterSpeech();
+    } else if (wakeListeningEnabled) {
+      startRecognition('wake');
+    }
+    armInactivityTimer();
+  };
 
   const resumeRecognitionAfterSpeech = () => {
     if (!wakeListeningEnabled || processing || speaking) return;
@@ -769,9 +822,10 @@
     if (wakeWordEnabled && !processing) startRecognition(recognitionMode());
   });
 
-  const setWakeWord = enabled => {
+  const setWakeWord = (enabled, startVision = true) => {
     if (!enabled) {
       wakeWordPreferenceEnabled = false;
+      faceWasDetected = false;
       clearFaceAbsenceTimer();
       window.nrviVision?.stop?.();
       stopWakeWord();
@@ -781,8 +835,8 @@
     wakeListeningEnabled = true;
     wakeWordEnabled = true;
     sync();
-    window.nrviVision?.start?.();
-    if (!inCall && !facePresenceEnabled) startRecognition('wake');
+    if (startVision) window.nrviVision?.start?.();
+    if (!inCall) startRecognition('wake');
     return true;
   };
 
@@ -797,6 +851,7 @@
       wakeWordEnabled = true;
       inCall = true;
       processing = false;
+      if (wakeWordPreferenceEnabled) window.nrviVision?.start?.();
       persistCallState();
       errorState = null;
       broadcastState();
@@ -934,11 +989,47 @@
       sendResponse({ ok: true, enabled });
       return false;
     }
+    if (message.type === 'vision.setPreview') {
+      (async () => {
+        try {
+          if (message.visible && !window.nrviVision?.isRunning?.()) {
+            const started = await window.nrviVision?.start?.();
+            if (!started) throw new Error('No se pudo iniciar la cámara.');
+          }
+          const visible = window.nrviVision?.setPreview?.(message.visible) ?? Boolean(message.visible);
+          chrome.storage.local.set({ cameraPreviewVisible: Boolean(message.visible) });
+          sendResponse({ ok: true, visible });
+        } catch (error) {
+          sendResponse({ ok: false, error: error.message });
+        }
+      })();
+      return true;
+    }
+    if (message.type === 'vision.setLandmarks') {
+      (async () => {
+        try {
+          if (message.visible && !window.nrviVision?.isRunning?.()) {
+            const started = await window.nrviVision?.start?.();
+            if (!started) throw new Error('No se pudo iniciar la cámara.');
+          }
+          const visible = window.nrviVision?.setLandmarks?.(message.visible) ?? Boolean(message.visible);
+          chrome.storage.local.set({ cameraLandmarksVisible: Boolean(message.visible) });
+          sendResponse({ ok: true, visible });
+        } catch (error) {
+          sendResponse({ ok: false, error: error.message });
+        }
+      })();
+      return true;
+    }
+    if (message.type === 'vision.getState') {
+      sendResponse({ ok: true, ...(window.nrviVision?.getState?.() || {}) });
+      return false;
+    }
     return false;
   });
 
   chrome.storage.local.get({ wakeWordEnabled: true }, settings => {
     wakeWordPreferenceEnabled = Boolean(settings.wakeWordEnabled);
-    setWakeWord(Boolean(settings.wakeWordEnabled));
+    setWakeWord(Boolean(settings.wakeWordEnabled), false);
   });
 })();
