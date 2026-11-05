@@ -52,6 +52,10 @@
   let active = false;
   let wakeListeningEnabled = false;
   let wakeWordEnabled = false;
+  let wakeWordPreferenceEnabled = false;
+  let facePresenceEnabled = true;
+  let facePresent = false;
+  let faceAbsenceTimer = null;
   let inCall = false;
   let processing = false;
   let speaking = false;
@@ -216,6 +220,7 @@
   const speak = (text, options = {}) => {
     const onend = typeof options === 'function' ? options : options.onend;
     const rate = typeof options === 'object' && options.rate ? options.rate : 1;
+    const allowInterruption = typeof options !== 'object' || options.allowInterruption !== false;
     stopSpeaking();
     if (!text || !('speechSynthesis' in window)) {
       onend?.();
@@ -235,10 +240,10 @@
       onend?.();
     };
     speechSynthesis.speak(utterance);
-    startRecognition('interrupt');
+    if (allowInterruption) startRecognition('interrupt');
   };
 
-  const playResponse = (text, audioBase64, audioMimeType = 'audio/mpeg', rate = 1, onend) => {
+  const playResponse = (text, audioBase64, audioMimeType = 'audio/mpeg', rate = 1, onend, allowInterruption = true) => {
     stopSpeaking();
     lastResponse = { text, audioBase64, audioMimeType };
     spokenText = text || '';
@@ -261,7 +266,7 @@
       currentAudio = null;
       speak(text, { rate, onend });
     });
-    startRecognition('interrupt');
+    if (allowInterruption) startRecognition('interrupt');
   };
 
   const replay = ({ slow = false } = {}) => {
@@ -299,6 +304,58 @@
     if (inactivityTimer) {
       clearTimeout(inactivityTimer);
       inactivityTimer = null;
+    }
+  };
+
+  const clearFaceAbsenceTimer = () => {
+    if (faceAbsenceTimer) {
+      clearTimeout(faceAbsenceTimer);
+      faceAbsenceTimer = null;
+    }
+  };
+
+  const setFacePresence = (present, available = true) => {
+    facePresenceEnabled = available;
+    if (!available) {
+      facePresent = true;
+      if (wakeWordPreferenceEnabled) {
+        wakeListeningEnabled = true;
+        wakeWordEnabled = true;
+        sync();
+        if (!inCall) startRecognition('wake');
+      }
+      return;
+    }
+    facePresent = Boolean(present);
+    if (facePresent) {
+      clearFaceAbsenceTimer();
+      if (wakeWordPreferenceEnabled && !inCall) {
+        wakeListeningEnabled = true;
+        wakeWordEnabled = true;
+        sync();
+        startRecognition('wake');
+      }
+      return;
+    }
+    if (!inCall && wakeWordPreferenceEnabled) {
+      clearFaceAbsenceTimer();
+      faceAbsenceTimer = setTimeout(() => {
+        faceAbsenceTimer = null;
+        if (facePresent || inCall || !wakeWordPreferenceEnabled) return;
+        wakeListeningEnabled = false;
+        wakeWordEnabled = false;
+        stopRecorder(true);
+        sync();
+      }, INACTIVITY_TIMEOUT_MS);
+      sync();
+    }
+  };
+
+  const setHandGesture = gesture => {
+    if (gesture === 'fist') {
+      pauseSpeaking();
+    } else if (gesture === 'open' && pausedState) {
+      resumeSpeaking();
     }
   };
 
@@ -447,10 +504,30 @@
 
   const processInterruptionTranscript = transcript => {
     processing = false;
-    const command = classifyVoiceCommand(transcript);
-    if (command) {
+    const text = String(transcript || '').trim();
+    const command = classifyVoiceCommand(text);
+    if (command === 'end_call') {
       executeVoiceCommand(command);
       stopRecorder(true);
+      return;
+    }
+    const question = extractQuestion(text);
+    if (question === null) {
+      if (!speaking && wakeListeningEnabled) {
+        setTimeout(() => resumeRecognitionAfterSpeech(), 0);
+      }
+      return;
+    }
+    const wakeQuestion = question.trim();
+    const wakeCommand = classifyVoiceCommand(wakeQuestion);
+    if (wakeCommand) {
+      executeVoiceCommand(wakeCommand);
+      stopRecorder(true);
+      return;
+    }
+    if (wakeQuestion && speaking) {
+      stopSpeaking();
+      askQuestion(wakeQuestion);
       return;
     }
     if (!speaking && wakeListeningEnabled) {
@@ -459,7 +536,9 @@
   };
 
   const startRecognition = nextMode => {
-    if ((processing && nextMode !== 'interrupt') || active || recognitionStarting || (!inCall && !wakeListeningEnabled)
+    if ((processing && nextMode !== 'interrupt') || active || recognitionStarting
+      || (nextMode === 'wake' && (!wakeListeningEnabled || (facePresenceEnabled && !facePresent)))
+      || (nextMode !== 'wake' && !inCall && !wakeListeningEnabled)
       || typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;
     clearInactivityTimer();
     if (document.visibilityState !== 'visible') {
@@ -608,7 +687,7 @@
           if (!speechDetected) speechStartedAt = now;
           speechDetected = true;
           silenceStartedAt = 0;
-          if (speaking) stopSpeaking();
+          if (speaking && mode !== 'interrupt') stopSpeaking();
         } else if (speechDetected) {
           silenceStartedAt ||= now;
         }
@@ -692,13 +771,18 @@
 
   const setWakeWord = enabled => {
     if (!enabled) {
+      wakeWordPreferenceEnabled = false;
+      clearFaceAbsenceTimer();
+      window.nrviVision?.stop?.();
       stopWakeWord();
       return false;
     }
+    wakeWordPreferenceEnabled = true;
     wakeListeningEnabled = true;
     wakeWordEnabled = true;
     sync();
-    if (!inCall) startRecognition('wake');
+    window.nrviVision?.start?.();
+    if (!inCall && !facePresenceEnabled) startRecognition('wake');
     return true;
   };
 
@@ -738,6 +822,7 @@
     processing = false;
     if (inCall) {
       speak(FAREWELL, {
+        allowInterruption: false,
         onend: () => {
           if (wakeListeningEnabled && !inCall && !processing) startRecognition('wake');
         }
@@ -809,6 +894,8 @@
     restoreSession,
     armInactivityTimer,
     resumeRecognition: resumeRecognitionAfterSpeech,
+    setFacePresence,
+    setHandGesture,
     isWakeWordEnabled: () => wakeListeningEnabled,
     isInCall: () => inCall,
     setWakeWord,
@@ -851,6 +938,7 @@
   });
 
   chrome.storage.local.get({ wakeWordEnabled: true }, settings => {
+    wakeWordPreferenceEnabled = Boolean(settings.wakeWordEnabled);
     setWakeWord(Boolean(settings.wakeWordEnabled));
   });
 })();

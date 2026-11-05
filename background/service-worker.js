@@ -146,7 +146,7 @@ chrome.commands.onCommand.addListener(async command => {
     if (!chrome.runtime.lastError) return;
     chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      files: ['content/context.js', 'content/voice.js', 'content/agent.js', 'content/overlay.js']
+      files: ['vendor/opencv.js', 'content/context.js', 'content/vision.js', 'content/voice.js', 'content/agent.js', 'content/overlay.js']
     }).then(() => {
       chrome.tabs.sendMessage(tab.id, { type: 'voice.toggle' });
     }).catch(error => {

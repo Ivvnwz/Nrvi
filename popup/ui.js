@@ -78,7 +78,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
-        files: ['content/context.js', 'content/voice.js', 'content/agent.js', 'content/overlay.js']
+        files: ['vendor/opencv.js', 'content/context.js', 'content/vision.js', 'content/voice.js', 'content/agent.js', 'content/overlay.js']
       });
       return true;
     } catch {

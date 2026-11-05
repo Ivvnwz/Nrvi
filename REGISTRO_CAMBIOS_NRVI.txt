@@ -1,0 +1,563 @@
+REGISTRO COMPARATIVO DE CAMBIOS - NRVI
+======================================
+
+Fecha de actualización: 27 de octubre de 2026
+Proyecto: NRVI - Agente web accesible
+
+OBJETIVO GENERAL
+----------------
+
+Convertir NRVI en un asistente de navegación web por voz que:
+
+- Entienda preguntas sobre la página actual.
+- Responda mediante texto y voz.
+- Ejecute acciones seguras sobre la página.
+- Mantenga una conversación entre cambios de sección o navegación.
+- Permita activación por palabra clave ("NAVI").
+- Permita interrupciones y comandos locales durante la respuesta.
+- Registre solicitudes, respuestas, estados y errores para depuración.
+
+
+1. ESTADO INICIAL
+-----------------
+
+Al inicio, el prototipo dependía principalmente de:
+
+- SpeechRecognition del navegador para capturar voz.
+- Groq como proveedor del modelo conversacional.
+- Groq Whisper para transcripción de voz.
+- ElevenLabs como proveedor opcional de audio.
+- Una interacción orientada a iniciar la llamada manualmente.
+- Estado de conversación limitado al documento actual.
+
+Problemas observados:
+
+- Brave podía devolver errores "network" con SpeechRecognition.
+- La voz de Navi podía ser transcrita como una nueva pregunta.
+- Las respuestas largas podían provocar límites de tokens de Groq.
+- ElevenLabs podía devolver HTTP 402 por saldo o cuota.
+- La llamada y la respuesta se perdían al cambiar de página.
+- Los comandos locales podían llegar al modelo si la clasificación fallaba.
+- Las capturas vacías podían crear ciclos de escucha.
+- El cierre automático podía quedar atrapado en estados incorrectos.
+- No había un registro completo y persistente de entradas, salidas y errores.
+
+
+2. CAMBIOS Y REEMPLAZOS TECNOLÓGICOS
+-------------------------------------
+
+2.1 Captura de voz
+
+ANTES:
+- SpeechRecognition del navegador.
+
+AHORA:
+- MediaRecorder.
+- navigator.mediaDevices.getUserMedia().
+- AudioContext y AnalyserNode para observar nivel y ruido.
+- Detección local de silencio y duración.
+
+Motivo:
+- Reducir la dependencia de servicios de reconocimiento integrados en el
+  navegador.
+- Evitar los errores de red observados en Brave.
+- Obtener control sobre las ventanas de grabación y el envío al backend.
+
+Estado:
+- Implementado.
+- ScriptProcessorNode fue eliminado por estar obsoleto.
+
+
+2.2 Transcripción de voz
+
+IMPLEMENTACIÓN INICIAL:
+- Groq Whisper como proveedor de transcripción.
+
+IMPLEMENTACIÓN ACTUAL:
+- Deepgram como proveedor principal de STT.
+- Groq Whisper como fallback si Deepgram falla y existe GROQ_API_KEY.
+
+Motivo:
+- Separar la transcripción del modelo conversacional.
+- Reducir la carga de Groq.
+- Evitar que los límites del modelo de chat afecten directamente a toda la
+  arquitectura de voz.
+
+Estado:
+- Deepgram responde correctamente en las pruebas registradas.
+- Groq se conserva como fallback de transcripción.
+- Los comandos locales todavía necesitan transcripción para ser reconocidos.
+
+
+2.3 Razonamiento y acciones
+
+ANTES Y AHORA:
+- Groq continúa siendo el proveedor del modelo conversacional.
+- El backend recibe preguntas, contexto, historial y sesión.
+- El modelo puede devolver texto y acciones estructuradas.
+
+Controles agregados:
+- Límite configurable de completion tokens.
+- Valor predeterminado observado: 700 tokens.
+- Mensaje específico para HTTP 429.
+- Enfriamiento temporal de 15 segundos después de un límite.
+- Filtrado de acciones permitidas y argumentos válidos.
+
+Estado:
+- Implementado.
+- El límite de Groq sigue siendo una restricción externa del servicio.
+
+
+2.4 Voz de respuesta
+
+IMPLEMENTACIÓN:
+- ElevenLabs como proveedor opcional de audio.
+- speechSynthesis del navegador como fallback.
+
+Comportamiento:
+- Si ElevenLabs no está disponible o devuelve un error, se conserva la
+  respuesta textual y se utiliza la voz del navegador.
+
+Estado:
+- Implementado.
+- HTTP 402 de ElevenLabs no impide conservar el texto.
+
+
+3. FUNCIONES AGREGADAS
+----------------------
+
+3.1 Logs operativos y de conversación
+
+Archivos:
+- server/logger.js
+- server/logs/nrvi.log
+- server/logs/nrvi-errors.log
+- server/logs/nrvi-conversations.log
+
+Se registran:
+- Solicitudes al agente.
+- Respuestas del agente.
+- Proveedor y modelo de transcripción.
+- Proveedor de audio.
+- Errores HTTP y errores de ejecución.
+- Sesiones y requestId.
+- Eventos de salud del backend.
+- Contadores de errores repetidos.
+
+Protecciones:
+- No deben registrarse claves API.
+- Los payloads se limitan para evitar entradas excesivamente grandes.
+- nrvi.log rota por tiempo o tamaño.
+- nrvi-errors.log conserva errores deduplicados.
+
+Estado:
+- Implementado.
+
+
+3.2 Sesiones e historial
+
+Se agregó:
+- sessionId por llamada.
+- Historial limitado y persistente.
+- Persistencia mediante sessionStorage.
+- Restauración de sesión al cargar una nueva página.
+- Cierre explícito de sesión en el backend.
+
+Estado:
+- Implementado.
+
+
+3.3 Comandos locales
+
+Los siguientes comandos se clasifican antes de enviarse al modelo:
+
+- Detente, para, alto, cállate, silencio.
+- Pausa.
+- Reanuda, continúa.
+- Repite, otra vez, ¿qué dijiste?
+- Más despacio.
+- Finaliza, finalizar, termina, cuelga.
+- Deja de escuchar.
+
+Ventaja:
+- No consumen una consulta de razonamiento cuando son reconocidos.
+
+Limitación:
+- Primero deben pasar por STT. Si la transcripción falla, el comando no
+  puede clasificarse localmente.
+
+Estado:
+- Implementado.
+
+
+3.4 Activación por palabra clave
+
+Se agregó el diccionario WAKE_WORD_DICTIONARY con variantes:
+
+- navi
+- nabi
+- naby
+- navy
+- nave
+- nabhi
+- navi asistente
+
+Comportamiento:
+- Fuera de una llamada, las frases sin una variante de NAVI se descartan.
+- "NAVI" activa la llamada.
+- "NAVI, explica esta página" activa la llamada y usa el texto posterior
+  como pregunta inicial.
+- El modo de espera queda activo por defecto cuando no existe una llamada.
+- El popup permite activar o desactivar la escucha.
+- La preferencia se guarda en chrome.storage.local.
+
+Estado:
+- Implementado mediante ventanas cortas de MediaRecorder y Deepgram.
+
+
+3.5 Interrupción durante la voz
+
+Se agregó un modo de escucha temporal "interrupt".
+
+Mientras Navi habla:
+- Se captura audio para detectar comandos locales.
+- No se envían preguntas normales al modelo.
+- Un comando como "detente" puede cortar la respuesta.
+- "pausa", "reanuda" y "finaliza la llamada" se procesan localmente.
+- Audio que no corresponde a un comando se descarta.
+
+Motivo:
+- Permitir interrupciones sin volver a transcribir la voz de Navi como una
+  pregunta del usuario.
+
+Estado:
+- Implementado y validado sintácticamente. Las interrupciones conversacionales
+  deben comenzar por NAVI; finalizar o colgar conservan una excepción local.
+- Se recomienda usar audífonos para mejorar la separación entre la voz de
+  Navi y la voz del usuario.
+
+
+3.6 Diagnóstico de audio
+
+Se agregaron:
+- Nivel RMS.
+- Ruido base estimado.
+- Umbral de voz.
+- Estado de pista de audio.
+- Estado del AudioContext.
+- sample rate.
+- Nivel de micrófono visible en el popup.
+
+Estado:
+- Implementado.
+
+
+3.7 Presencia facial y gestos de mano
+
+Se agregó OpenCV.js local en vendor/opencv.js y un clasificador facial local.
+
+Comportamiento:
+- La cámara se inicia junto con el standby de NAVI.
+- La presencia facial habilita la detección de la palabra clave.
+- La ausencia facial durante 7 segundos pausa el standby.
+- El regreso del rostro reactiva el standby.
+- La ausencia facial no finaliza una llamada activa.
+- Un puño estable durante 2 segundos pausa la respuesta.
+- Una mano abierta estable durante 2 segundos reanuda la respuesta.
+- Las imágenes se procesan localmente y no se envían al backend.
+
+Estado:
+- Presencia facial implementada.
+- Gestos de mano implementados como detección experimental.
+- Falta calibración con diferentes cámaras, iluminación y fondos.
+
+
+3.8 Cierre automático
+
+Configuración actual:
+- 7 segundos sin actividad válida.
+- Límite de 15 segundos por frase.
+- Las grabaciones vacías ya no deben crear ciclos infinitos.
+- El temporizador no debe cerrar la llamada mientras hay captura,
+  procesamiento, voz o arranque del reconocimiento.
+
+Estado:
+- Implementado y corregido durante las pruebas.
+
+
+3.9 Navegación persistente
+
+Antes de navegar se guarda:
+- sessionId.
+- Respuesta pendiente.
+- Historial.
+- Marca de tiempo.
+
+Después de cargar la página destino:
+- Se consume la respuesta pendiente.
+- Se restaura la sesión.
+- Se restaura el historial.
+- Navi reproduce la respuesta en la nueva página.
+- Se intenta reabrir el popup cuando Brave permite chrome.action.openPopup().
+
+Estado:
+- Implementado.
+
+Limitación:
+- El popup físico pertenece al documento anterior y no puede permanecer
+  abierto durante la navegación. Solo puede restaurarse o reabrirse.
+
+
+4. CORRECCIONES DE ESTADOS Y CICLOS
+------------------------------------
+
+Se corrigieron los siguientes casos:
+
+- El modo NAVI solicitaba micrófono pero descartaba la transmisión porque
+  exigía que inCall fuera verdadero.
+- La activación por NAVI dejaba processing en true después del saludo.
+- Una frase casual como "hola" dejaba el sistema en "Procesando".
+- Una respuesta completa podía iniciar una captura prematura y generar un
+  texto vacío que cerraba la llamada.
+- La despedida podía apagar también el modo de espera.
+- El micrófono no se reanudaba después de una respuesta.
+- Las capturas vacías podían reiniciar el ciclo indefinidamente.
+- La respuesta posterior a una navegación podía restaurar el popup como
+  "Iniciar llamada" aunque Navi siguiera hablando.
+
+Estado:
+- Corregido en el flujo actual.
+
+
+5. ESTRUCTURA ACTUAL PRINCIPAL
+------------------------------
+
+content/context.js
+- Construye el contexto semántico de la página.
+
+content/voice.js
+- MediaRecorder.
+- AudioContext y diagnóstico.
+- Modo llamada.
+- Modo standby.
+- Activación por NAVI.
+- Comandos locales.
+- Interrupciones.
+- Reproducción de voz.
+- Temporizador de inactividad.
+- Persistencia de sesión.
+
+content/agent.js
+- Solicitudes al backend.
+- Historial.
+- Respuestas de voz.
+- Navegación pendiente.
+- Restauración después de cambiar de página.
+
+background/service-worker.js
+- Puente entre contenido y backend.
+- Envío de audio a /api/transcribe.
+- Envío de preguntas a /api/agent.
+- Persistencia temporal durante navegación.
+- Consumo de respuestas pendientes.
+
+popup/index.html y popup/ui.js
+- Configuración del backend.
+- Prueba textual.
+- Estado de la voz.
+- Nivel del micrófono.
+- Activación de NAVI.
+
+server/server.js
+- API Express.
+- /api/transcribe.
+- /api/agent.
+- Sesiones.
+- Deepgram.
+- Groq.
+- ElevenLabs.
+- Manejo de límites y errores.
+
+
+6. ESTADO ACTUAL DEL PROTOTIPO
+------------------------------
+
+FUNCIONA:
+
+- Preguntas textuales y por voz.
+- Captura con MediaRecorder.
+- Transcripción principal con Deepgram.
+- Fallback de transcripción con Groq.
+- Razonamiento con Groq.
+- TTS opcional con ElevenLabs.
+- Fallback de voz con speechSynthesis.
+- Comandos locales.
+- Activación por NAVI.
+- Escucha de interrupciones durante la respuesta.
+- Sesión persistente entre páginas.
+- Respuesta posterior a navegación.
+- Popup con estado y diagnóstico.
+- Logs operativos, errores y conversaciones.
+- Cierre automático de la llamada.
+- Pruebas del servidor: 8 pruebas aprobadas en la última ejecución.
+
+
+7. PENDIENTES PARA COMPLETAR EL OBJETIVO FINAL
+----------------------------------------------
+
+7.1 Detector de palabra clave local real
+
+La implementación actual envía ventanas breves de audio a Deepgram incluso
+en modo de espera. Para una versión más eficiente se recomienda:
+
+- VAD local para detectar si existe voz.
+- Detector de palabra clave ejecutado en el navegador.
+- Envío a Deepgram solo después de detectar una posible palabra NAVI.
+
+Beneficios:
+- Menor consumo de Deepgram.
+- Menor latencia.
+- Mayor privacidad.
+- Menos solicitudes vacías.
+
+
+7.2 Mejor separación entre escucha e interrupción
+
+Pendiente:
+- Afinar el detector para diferenciar la voz de Navi de la del usuario.
+- Añadir un estado visual específico: "Escuchando interrupción".
+- Evitar falsos positivos con respuestas largas.
+- Probar micrófonos y altavoces sin audífonos.
+
+
+7.3 Pruebas automatizadas del frontend
+
+Actualmente las pruebas automatizadas cubren principalmente funciones puras
+del servidor. Falta agregar pruebas para:
+
+- extractQuestion().
+- Diccionario de variantes NAVI.
+- Clasificación de comandos.
+- Transiciones de processing, speaking, active e inCall.
+- Cierre automático.
+- Restauración de navegación.
+- Descarte de frases sin NAVI.
+- Interrupciones durante TTS.
+
+
+7.4 Pruebas reales de navegador
+
+Debe validarse en Brave:
+
+- Página normal y página restringida.
+- Permiso concedido y permiso denegado.
+- Micrófono ocupado por otra aplicación.
+- Audífonos conectados y desconectados.
+- Cambio de pestaña.
+- Recarga de página.
+- Navegación interna.
+- Navegación externa.
+- Respuestas largas.
+- Error 429 de Groq.
+- Error de Deepgram.
+- Error 402 de ElevenLabs.
+
+
+7.5 Persistencia más robusta
+
+Pendiente:
+- Evaluar chrome.storage.session frente a una sesión persistente más larga.
+- Controlar expiración de llamadas abandonadas.
+- Recuperar correctamente el estado si el service worker se reinicia.
+- Evitar sesiones duplicadas por múltiples pestañas.
+
+
+7.6 Seguridad y operación
+
+Pendiente obligatorio:
+- Revocar y regenerar las claves API que hayan sido expuestas durante el
+  desarrollo.
+- Mantener server/.env fuera del control de versiones.
+- Confirmar que ninguna clave aparezca en logs, capturas o commits.
+- Añadir validación y límites de tamaño para todos los archivos de audio.
+- Revisar permisos de la extensión antes de distribuirla.
+
+
+7.7 Documentación técnica
+
+Pendiente:
+- Actualizar las secciones antiguas del README que todavía describen a Groq
+  como proveedor principal de STT.
+- Reemplazar la lista de fases heredada por una lista alineada con Deepgram,
+  wake word y el flujo de interrupciones.
+- Documentar formalmente los estados de la máquina de voz.
+- Documentar límites de consumo por proveedor.
+
+
+8. RECOMENDACIÓN DE ARQUITECTURA FINAL
+---------------------------------------
+
+Para completar el objetivo se recomienda conservar esta separación:
+
+1. Wake word local:
+   detecta NAVI sin enviar audio continuo a la nube.
+
+2. VAD local:
+   determina cuándo existe una frase útil.
+
+3. Deepgram:
+   transcribe la frase del usuario después de activarse.
+
+4. Router local:
+   identifica detente, pausa, reanuda, repite y finaliza.
+
+5. Groq:
+   procesa solo preguntas y tareas que necesiten razonamiento.
+
+6. Motor de acciones:
+   ejecuta únicamente acciones permitidas y validadas.
+
+7. ElevenLabs o speechSynthesis:
+   genera la respuesta de voz.
+
+8. Estado persistente:
+   conserva sesión, historial y respuesta pendiente al navegar.
+
+Esta separación mantiene a Groq dentro de la arquitectura, pero evita usarlo
+para tareas que pueden resolverse localmente.
+
+
+9. ARCHIVOS DE CONFIGURACION Y CREDENCIALES
+--------------------------------------------
+
+server/.env contiene la configuración efectiva del entorno local.
+
+Este registro no incluye claves, tokens ni valores secretos.
+
+Las claves API deben:
+- Permanecer solo en server/.env.
+- No incluirse en la extensión.
+- No aparecer en logs.
+- No incluirse en commits.
+- Ser regeneradas si fueron compartidas o expuestas durante las pruebas.
+
+
+10. VALIDACION REALIZADA
+------------------------
+
+Comandos ejecutados durante la evolución:
+
+- node --check content/voice.js
+- node --check content/agent.js
+- node --check background/service-worker.js
+- git diff --check
+- npm test
+
+Resultado más reciente:
+- Sintaxis frontend validada.
+- Formato del diff validado.
+- 8 pruebas del servidor aprobadas.
+
+Este documento es un registro de evolución y debe actualizarse cuando se
+incorpore el detector local de wake word, el VAD, nuevas pruebas automatizadas
+o cambios de proveedor.

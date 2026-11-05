@@ -81,11 +81,26 @@ estimado y el umbral de voz. El popup recibe esos mismos valores para observar
 si el micrófono está captando ruido ambiental. La medición usa `AnalyserNode`;
 no usa `ScriptProcessorNode`, que está obsoleto.
 
-La escucha permanece activa durante la respuesta de Navi para permitir comandos
-como `detente`, `pausa` o una nueva pregunta. Se recomienda usar audífonos para
-evitar que la respuesta reproducida vuelva al micrófono. La sesión y el
-historial se conservan al navegar dentro de la misma pestaña, de modo que la
-llamada no se reinicia por una recarga o cambio de página.
+La escucha permanece activa durante la respuesta de Navi para detectar
+interrupciones locales. Se recomienda usar audífonos para evitar que la
+respuesta reproducida vuelva al micrófono. La sesión y el historial se
+conservan al navegar dentro de la misma pestaña, de modo que la llamada no se
+reinicia por una recarga o cambio de página.
+
+Durante la respuesta, una interrupción conversacional debe comenzar por
+`NAVI` (incluidas sus variantes). `NAVI, detente` y `NAVI, pausa` se procesan
+localmente; `NAVI, pregunta` detiene la reproducción y envía la pregunta al
+agente. `finaliza la llamada` y `cuelga` siguen siendo comandos de emergencia
+reconocidos sin la palabra clave.
+
+La extensión incluye OpenCV.js local en `vendor/opencv.js` y el clasificador
+facial en `vendor/haarcascade_frontalface_default.xml`. Cuando el modo NAVI
+está habilitado, la cámara detecta presencia facial sin enviar imágenes al
+backend. Si no hay rostro durante 7 segundos, se pausa el standby; cuando el
+rostro vuelve, la escucha de NAVI se reactiva. La ausencia facial no finaliza
+una llamada activa. La detección experimental de manos usa la zona inferior
+del vídeo: un puño estable durante 2 segundos pausa la voz y una mano abierta
+estable durante 2 segundos la reanuda.
 
 Los comandos locales no se envían al modelo conversacional, pero primero deben
 transcribirse con Groq Whisper para que el navegador pueda identificarlos. Por

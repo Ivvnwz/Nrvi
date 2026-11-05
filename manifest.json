@@ -19,8 +19,12 @@
   },
   "content_scripts": [{
     "matches": ["<all_urls>"],
-    "js": ["content/context.js", "content/voice.js", "content/agent.js", "content/overlay.js"],
+    "js": ["vendor/opencv.js", "content/context.js", "content/vision.js", "content/voice.js", "content/agent.js", "content/overlay.js"],
     "run_at": "document_idle"
+  }],
+  "web_accessible_resources": [{
+    "resources": ["vendor/haarcascade_frontalface_default.xml"],
+    "matches": ["<all_urls>"]
   }],
   "minimum_chrome_version": "116"
 }
