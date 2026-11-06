@@ -23,13 +23,17 @@
   ];
   const PAUSE_PHRASES = ['pausa la respuesta', 'espera'];
   const STOP_PHRASES = ['deten la respuesta', 'para la respuesta', 'cancela la respuesta'];
-  const INACTIVITY_TIMEOUT_MS = 7000;
+  const INACTIVITY_TIMEOUT_MS = 180000;
+  const FACE_ABSENCE_TIMEOUT_MS = 7000;
+  const FACE_REMINDER_DELAY_MS = 5000;
   const MIN_RECORDING_DURATION_MS = 250;
   const MIN_AUDIO_BYTES = 1024;
   const AUDIO_FALLBACK_MIN_DURATION_MS = 800;
   const AUDIO_FALLBACK_MIN_BYTES = 4096;
   const GREETING = 'Hola, soy Navi, tu asistente de navegación. ¿En qué puedo ayudarte?';
   const FAREWELL = 'De acuerdo, hasta luego.';
+  const FACE_ABSENCE_FAREWELL = 'Usuario ausente, terminando llamada.';
+  const FACE_REMINDER = 'Usuario presente, diga Navi para activar el asistente.';
 
   let recorder;
   let audioStream;
@@ -57,6 +61,8 @@
   let facePresent = false;
   let faceWasDetected = false;
   let faceAbsenceTimer = null;
+  let faceReminderTimer = null;
+  let faceReminderShown = false;
   let inCall = false;
   let processing = false;
   let speaking = false;
@@ -233,10 +239,12 @@
     utterance.lang = 'es-ES';
     utterance.rate = rate;
     speaking = true;
+    clearFaceAbsenceTimer();
     sync();
     utterance.onend = () => {
       speaking = false;
       pausedState = false;
+      armFaceAbsenceTimer();
       sync();
       onend?.();
     };
@@ -258,10 +266,12 @@
       currentAudio = null;
       speaking = false;
       pausedState = false;
+      armFaceAbsenceTimer();
       sync();
       onend?.();
     };
     speaking = true;
+    clearFaceAbsenceTimer();
     sync();
     currentAudio.play().catch(() => {
       currentAudio = null;
@@ -315,6 +325,37 @@
     }
   };
 
+  const clearFaceReminderTimer = () => {
+    if (faceReminderTimer) {
+      clearTimeout(faceReminderTimer);
+      faceReminderTimer = null;
+    }
+  };
+
+  const armFaceReminder = () => {
+    if (faceReminderTimer || !wakeListeningEnabled || inCall || !facePresent || speaking || faceReminderShown) return;
+    faceReminderTimer = setTimeout(() => {
+      faceReminderTimer = null;
+      if (!wakeListeningEnabled || inCall || !facePresent || speaking || faceReminderShown) return;
+      faceReminderShown = true;
+      speak(FACE_REMINDER, {
+        allowInterruption: false,
+        onend: () => {
+          if (wakeListeningEnabled && !inCall && !speaking) startRecognition('wake');
+        }
+      });
+    }, FACE_REMINDER_DELAY_MS);
+  };
+
+  const armFaceAbsenceTimer = () => {
+    if (faceAbsenceTimer || !inCall || speaking || facePresent || !faceWasDetected) return;
+    faceAbsenceTimer = setTimeout(() => {
+      faceAbsenceTimer = null;
+      if (facePresent || speaking || !inCall) return;
+      setCall(false, undefined, FACE_ABSENCE_FAREWELL);
+    }, FACE_ABSENCE_TIMEOUT_MS);
+  };
+
   const setFacePresence = (present, available = true) => {
     facePresenceEnabled = available;
     if (!available) {
@@ -331,6 +372,7 @@
     if (facePresent) {
       faceWasDetected = true;
       clearFaceAbsenceTimer();
+      armFaceReminder();
       if (wakeWordPreferenceEnabled && !inCall) {
         wakeListeningEnabled = true;
         wakeWordEnabled = true;
@@ -339,16 +381,28 @@
       }
       return;
     }
-    if (!inCall && wakeWordPreferenceEnabled && faceWasDetected) {
+    if (inCall && faceWasDetected) {
+      armFaceAbsenceTimer();
+      sync();
+      return;
+    }
+    faceReminderShown = false;
+    clearFaceReminderTimer();
+    if (wakeWordPreferenceEnabled && faceWasDetected) {
       clearFaceAbsenceTimer();
       faceAbsenceTimer = setTimeout(() => {
         faceAbsenceTimer = null;
-        if (facePresent || inCall || !wakeWordPreferenceEnabled) return;
+        if (facePresent || !faceWasDetected) return;
+        if (inCall) {
+          setCall(false, undefined, FACE_ABSENCE_FAREWELL);
+          return;
+        }
+        if (!wakeWordPreferenceEnabled) return;
         wakeListeningEnabled = false;
         wakeWordEnabled = false;
         stopRecorder(true);
         sync();
-      }, INACTIVITY_TIMEOUT_MS);
+      }, FACE_ABSENCE_TIMEOUT_MS);
       sync();
     }
   };
@@ -840,7 +894,7 @@
     return true;
   };
 
-  const setCall = (enabled, initialQuestion) => {
+  const setCall = (enabled, initialQuestion, farewell = FAREWELL) => {
     if (enabled) {
       if (inCall) {
         if (!active && !processing && !speaking) startRecognition('call');
@@ -876,7 +930,7 @@
     const closingSessionId = sessionId;
     processing = false;
     if (inCall) {
-      speak(FAREWELL, {
+      speak(farewell, {
         allowInterruption: false,
         onend: () => {
           if (wakeListeningEnabled && !inCall && !processing) startRecognition('wake');
@@ -899,8 +953,8 @@
     return false;
   };
 
-  const endCall = () => {
-    setCall(false);
+  const endCall = farewell => {
+    setCall(false, undefined, farewell);
   };
 
   const restoreSession = restoredSessionId => {

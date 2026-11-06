@@ -30,7 +30,7 @@ Groq Speech-to-Text (`whisper-large-v3-turbo`). Esto evita depender de
 disponible, se usa la voz del navegador.
 
 La grabación se mantiene en memoria durante una frase, con detección local de
-silencio, cierre automático tras 7 segundos sin instrucciones y un límite de
+silencio, cierre automático tras 3 minutos sin instrucciones y un límite de
 15 segundos por frase. El audio se envía al backend
 `/api/transcribe` y no se guarda en disco.
 
@@ -96,8 +96,11 @@ la palabra clave.
 La extensión incluye el detector facial Tiny Face Detector de `face-api.js` y
 sus pesos locales en `vendor/face-api`. Cuando el modo NAVI está habilitado,
 la cámara detecta presencia facial sin enviar imágenes al backend. Si no hay
-rostro durante 7 segundos, se pausa el standby; cuando el rostro vuelve, la
-escucha de NAVI se reactiva. La ausencia facial no finaliza una llamada activa.
+rostro durante 3 minutos, se pausa el standby; cuando el rostro vuelve, la
+escucha de NAVI se reactiva. Durante una llamada activa, la ausencia facial
+durante 7 segundos sin que Navi esté hablando reproduce «Usuario ausente,
+terminando llamada.» y finaliza la llamada. Los frames consecutivos sin rostro
+mantienen el mismo temporizador; no lo reinician.
 
 Debido a la política CSP de las extensiones MV3, el detector se ejecuta en
 `sandbox/vision.html`, no directamente en el script de contenido. El contenido
@@ -110,6 +113,11 @@ La cámara no se inicia automáticamente al abrir una página. Se inicia al
 activar explícitamente la palabra `NAVI`, iniciar una llamada o pulsar
 **Mostrar cámara**. Ocultarla solo cambia su visibilidad y permite volver a
 mostrarla desde el popup.
+
+En standby, cuando el rostro permanece detectado durante 5 segundos, Navi
+recuerda: «Usuario presente, diga Navi para activar el asistente». El aviso se
+emite una sola vez por cada periodo de presencia; vuelve a habilitarse cuando
+el rostro desaparece y luego se detecta nuevamente.
 
 Los marcadores faciales usan el modelo local de 68 puntos de `face-api.js`.
 Los marcadores de mano usan MediaPipe Hands local y muestran sus 21 puntos
