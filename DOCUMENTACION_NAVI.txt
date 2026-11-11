@@ -1,0 +1,531 @@
+DOCUMENTACION TECNICA DE NAVI / NRVI
+====================================
+
+Fecha de documentacion: 2026-11-11
+Version de la extension: 0.2.0
+Version del servidor: 0.1.0
+
+1. RESUMEN DEL SISTEMA
+----------------------
+
+Navi, cuyo nombre tecnico en el codigo es NRVI, es una extension de navegador
+para asistencia conversacional y accesibilidad web. Permite:
+
+- Recibir preguntas escritas o habladas.
+- Analizar el contenido visible de la pagina actual.
+- Responder en espanol mediante un modelo conversacional.
+- Proponer acciones estructuradas sobre controles visibles.
+- Ejecutar acciones limitadas en la pagina.
+- Reproducir respuestas por voz.
+- Detectar presencia facial y gestos localmente.
+- Registrar errores operativos y conversaciones.
+- Monitorear paginas en un navegador de prueba mediante Playwright.
+
+La extension no envia las claves de proveedores al navegador. Las claves se
+mantienen en server/.env y las peticiones a los proveedores se hacen desde el
+backend.
+
+2. ESTRUCTURA DE MODULOS
+------------------------
+
+2.1. manifest.json
+
+Define la extension Chrome Manifest V3:
+
+- Nombre y version de la extension.
+- Permisos: activeTab, storage, tabs y scripting.
+- Conexion permitida al backend local http://localhost:3000.
+- Permisos opcionales para paginas HTTP y HTTPS.
+- Service worker de fondo.
+- Popup de configuracion.
+- Scripts de contenido que se cargan en todas las paginas.
+- Recursos accesibles para el sandbox de vision.
+- Version minima de Chrome: 116.
+
+2.2. content/context.js
+
+Construye el contexto semantico de la pagina actual. No usa Playwright.
+
+Responsabilidades:
+
+- Buscar botones, enlaces y controles visibles.
+- Buscar campos de texto, textarea y select.
+- Filtrar elementos invisibles.
+- Generar identificadores temporales como action-0 y field-0.
+- Guardar una relacion entre cada identificador y su elemento DOM real.
+- Obtener URL, titulo, encabezados, descripcion y texto visible.
+- Limitar la cantidad de acciones, campos y texto para reducir el contexto.
+
+Expone:
+
+- window.nrviContext(): devuelve el contexto de la pagina.
+- window.nrviResolve(id): recupera un elemento registrado por su identificador.
+
+Los identificadores son temporales y pertenecen a la pagina actual. No son
+selectores globales ni deben reutilizarse despues de una navegacion completa.
+
+2.3. content/agent.js
+
+Coordina las preguntas al agente y ejecuta las acciones recibidas.
+
+Responsabilidades:
+
+- Recibir una pregunta desde voz o popup.
+- Obtener el contexto mediante window.nrviContext().
+- Enviar pregunta, contexto, historial y sesion al service worker.
+- Recibir texto, audio y acciones del backend.
+- Ejecutar las acciones permitidas.
+- Mantener historial de conversacion.
+- Preparar y restaurar respuestas cuando una accion navega a otra pagina.
+- Aplicar control de concurrencia para evitar solicitudes simultaneas.
+- Aplicar enfriamiento cuando Groq devuelve limite de uso.
+
+Acciones soportadas:
+
+- click_element
+- focus_field
+- fill_input
+- scroll_page
+
+2.4. content/voice.js
+
+Controla la captura y reproduccion de voz.
+
+Responsabilidades:
+
+- Capturar el microfono con getUserMedia y MediaRecorder.
+- Detectar silencio y nivel de ruido con AudioContext y AnalyserNode.
+- Enviar audio al backend para transcripcion.
+- Gestionar llamada, standby y palabra de activacion NAVI.
+- Reproducir audio de ElevenLabs cuando esta disponible.
+- Usar speechSynthesis del navegador como fallback.
+- Pausar, reanudar, detener y repetir respuestas.
+- Informar estado de voz y diagnosticos al popup.
+
+La transcripcion no se hace directamente con Playwright ni con
+SpeechRecognition. Se envia un archivo de audio al endpoint /api/transcribe.
+
+2.5. content/vision.js
+
+Coordina las funciones de vision locales:
+
+- Deteccion de presencia facial.
+- Deteccion de puntos faciales.
+- Deteccion de orientacion de cabeza a izquierda y derecha.
+- Deteccion de manos.
+- Clasificacion de gestos.
+- Temporizadores de ausencia y presencia.
+- Recordatorio hablado de presencia cada 15 segundos en standby.
+- Vista previa y marcadores visuales.
+
+Los frames de camara no se envian al backend. La vision se ejecuta localmente
+usando un sandbox de la extension.
+
+2.6. content/overlay.js
+
+Gestiona elementos visuales superpuestos de la extension, como estados,
+indicadores y elementos de apoyo sobre la pagina.
+
+2.7. background/service-worker.js
+
+Es el puente entre los scripts de contenido, el popup y el backend.
+
+Responsabilidades:
+
+- Resolver la URL del backend.
+- Enviar preguntas al endpoint /api/agent.
+- Enviar audio al endpoint /api/transcribe.
+- Finalizar sesiones mediante /api/session/end.
+- Aplicar timeout de 30 segundos a las peticiones.
+- Guardar respuestas pendientes durante navegaciones.
+- Restaurar respuestas despues de cargar una nueva pagina.
+- Gestionar el comando de teclado Alt+Shift+V.
+
+El service worker no ejecuta Playwright y no ejecuta las acciones DOM de Navi.
+
+2.8. popup/index.html y popup/ui.js
+
+Constituyen la interfaz de configuracion y control:
+
+- Configurar backend.
+- Comprobar salud del servidor.
+- Enviar preguntas escritas.
+- Iniciar o terminar llamada.
+- Activar o desactivar la palabra NAVI.
+- Mostrar camara y marcadores.
+- Ver estado de voz.
+- Ver nivel de microfono y ruido.
+- Mostrar ultima pregunta y respuesta.
+
+2.9. sandbox/vision.html y sandbox/vision.js
+
+Ejecutan los modelos de vision en un sandbox compatible con la politica CSP de
+Manifest V3. Reciben datos de los modelos y frames locales desde vision.js y
+devuelven resultados de deteccion.
+
+2.10. vendor/face-api
+
+Incluye face-api.js y pesos locales para:
+
+- Tiny Face Detector.
+- Landmarks faciales de 68 puntos.
+
+El archivo incluido contiene una referencia de face-api.js 1.7.15. Los pesos
+se distribuyen localmente y no requieren una peticion a un CDN durante el uso.
+
+2.11. vendor/mediapipe-hands
+
+Incluye la implementacion local de MediaPipe Hands y sus recursos WASM/data
+para detectar manos y 21 puntos por mano.
+
+El repositorio no declara en un package.json la version exacta de MediaPipe
+Hands incluida en vendor. Por tanto, la version debe considerarse "version
+vendorizada no declarada" hasta verificar el origen del archivo.
+
+2.12. server/server.js
+
+Es el backend Express.
+
+Endpoints principales:
+
+- GET /health: informa si Groq y ElevenLabs tienen claves configuradas.
+- POST /api/agent: procesa preguntas, contexto, historial y acciones.
+- POST /api/transcribe: transcribe audio mediante Deepgram o Groq.
+- POST /api/session/end: finaliza el registro de una sesion.
+
+El servidor:
+
+- Construye mensajes para el modelo.
+- Declara las herramientas de acciones permitidas.
+- Llama a Groq para responder.
+- Filtra las acciones recibidas.
+- Llama a ElevenLabs para producir audio opcional.
+- Devuelve texto, acciones y audio a la extension.
+
+2.13. server/lib.js
+
+Contiene funciones reutilizables:
+
+- cleanModel(): limpia el identificador de modelo.
+- safeActions(): acepta solo acciones autorizadas y argumentos JSON validos.
+- buildMessages(): crea el prompt, historial y pregunta con contexto.
+- fetchWithTimeout(): cancela peticiones que exceden el tiempo limite.
+
+2.14. server/logger.js
+
+Gestiona:
+
+- Logs operativos.
+- Logs de errores agrupados por firma.
+- Logs de conversaciones.
+- Rotacion y limites de tamano de logs.
+- Asociacion de eventos con sesiones.
+
+Los archivos de log estan en server/logs/.
+
+2.15. server/playwright/monitor.js
+
+Es una herramienta separada de monitoreo pasivo. Abre un navegador de prueba
+en modo headless y registra:
+
+- Carga de pagina.
+- Mensajes de consola.
+- Errores JavaScript de pagina.
+- Solicitudes fallidas.
+- Respuestas HTTP con estado 400 o superior.
+- Tiempo de monitoreo.
+
+No importa la extension, no usa window.nrviContext(), no llama a
+window.nrviResolve() y no ejecuta click, fill, focus, submit ni scroll.
+
+3. FLUJO DE UNA CONSULTA
+------------------------
+
+1. El usuario escribe una pregunta en el popup o la pronuncia.
+2. voice.js graba y solicita transcripcion si la entrada es de voz.
+3. agent.js solicita el contexto actual a context.js.
+4. agent.js envia pregunta, contexto e historial al service worker.
+5. service-worker.js hace POST a /api/agent.
+6. server.js crea los mensajes del modelo.
+7. Groq devuelve texto y, si corresponde, una llamada de herramienta.
+8. safeActions() filtra la llamada para conservar solo acciones permitidas.
+9. Si hay una accion, agent.js la ejecuta en el DOM de la pestaña.
+10. server.js genera audio opcional con ElevenLabs.
+11. La extension reproduce el audio o usa speechSynthesis como fallback.
+12. La respuesta se guarda en el historial y en los logs.
+
+4. PROVEEDORES Y HERRAMIENTAS
+-----------------------------
+
+4.1. Groq
+
+Uso:
+
+- Modelo conversacional.
+- Function calling para proponer acciones.
+- Transcripcion de audio fallback.
+
+Modelos configurables:
+
+- GROQ_MODEL: por defecto openai/gpt-oss-20b.
+- GROQ_STT_MODEL: por defecto whisper-large-v3-turbo.
+
+Limite de salida:
+
+- GROQ_MAX_COMPLETION_TOKENS: por defecto 700.
+
+Version de API:
+
+- Endpoint compatible con OpenAI:
+  https://api.groq.com/openai/v1/chat/completions
+  https://api.groq.com/openai/v1/audio/transcriptions
+
+4.2. Deepgram
+
+Uso:
+
+- Proveedor principal de transcripcion de audio.
+
+Modelo configurable:
+
+- DEEPGRAM_STT_MODEL: por defecto nova-3.
+
+Endpoint:
+
+- https://api.deepgram.com/v1/listen
+
+Si Deepgram falla y existe GROQ_API_KEY, se intenta Groq como fallback.
+
+4.3. ElevenLabs
+
+Uso:
+
+- Texto a voz para respuestas del agente.
+
+Configuracion:
+
+- ELEVENLABS_VOICE_ID: voz usada.
+- ELEVENLABS_MODEL: por defecto eleven_multilingual_v2.
+- ELEVENLABS_TIMEOUT_MS: por defecto 15000.
+
+Endpoint:
+
+- https://api.elevenlabs.io/v1/text-to-speech/{voice_id}
+
+Si falta la clave, hay un error de cuota, autenticacion, limite o audio vacio,
+la respuesta textual se conserva y se usa speechSynthesis del navegador.
+
+4.4. Express
+
+Version declarada: ^4.21.2
+Version instalada en package-lock.json: 4.22.2
+
+Funciona como servidor HTTP y enruta los endpoints de NRVI.
+
+4.5. CORS
+
+Version declarada: ^2.8.5
+Version instalada: 2.8.6
+
+Controla los origenes permitidos para acceder al backend.
+
+4.6. dotenv
+
+Version declarada: ^16.4.7
+Version instalada: 16.6.1
+
+Carga server/.env en process.env.
+
+4.7. multer
+
+Version declarada: ^2.0.2
+Version instalada: 2.5.0
+
+Recibe archivos de audio en memoria para el endpoint /api/transcribe.
+
+4.8. Playwright
+
+Version declarada: ^1.56.1
+Version instalada en package-lock.json: 1.65.0
+
+En NRVI se usa exclusivamente para monitoreo pasivo en un navegador de prueba.
+No es parte de la automatizacion operativa del navegador del usuario.
+
+4.9. Node.js y npm
+
+El servidor usa JavaScript ESM (type: module), fetch, AbortController,
+FormData, Blob y node:test. El proyecto no fija una version de Node en
+package.json. Durante esta documentacion se validaron los comandos con
+Node.js 22.12.0 y npm.
+
+5. AUTOMATIZACION WEB DENTRO DE NAVI
+------------------------------------
+
+La automatizacion web de Navi no la realiza Playwright. La realiza directamente
+el content script dentro de la pagina del usuario, usando el DOM y APIs del
+navegador.
+
+5.1. Descubrimiento de controles
+
+context.js inspecciona selectores DOM:
+
+- button
+- a[href]
+- [role="button"]
+- input[type="submit"]
+- input[type="button"]
+- input, textarea y select visibles
+
+Para cada elemento crea un identificador temporal y lo guarda en un Map local.
+El modelo recibe una lista de acciones, campos y texto visible, no el objeto
+DOM completo.
+
+5.2. Decision del modelo
+
+server.js registra cuatro herramientas para function calling:
+
+- click_element(id)
+- focus_field(id)
+- fill_input(id, text)
+- scroll_page(direction)
+
+El modelo solo puede proponer esas herramientas. safeActions() rechaza:
+
+- Nombres de herramientas no autorizados.
+- JSON invalido.
+- Arrays en lugar de objetos.
+- Valores que no tengan argumentos parseables.
+
+Este filtrado es una capa de seguridad del backend, no una garantia de que la
+intencion del modelo siempre sea correcta.
+
+5.3. Ejecucion de acciones
+
+agent.js recibe las acciones filtradas y ejecuta:
+
+click_element:
+
+- Resuelve el ID con window.nrviResolve().
+- Enfoca el elemento.
+- Ejecuta element.click().
+
+focus_field:
+
+- Resuelve el elemento.
+- Lo enfoca.
+
+fill_input:
+
+- Resuelve el elemento.
+- Escribe mediante el setter nativo de HTMLInputElement o HTMLTextAreaElement.
+- Para select usa element.value directamente.
+- Dispara eventos input y change.
+
+scroll_page:
+
+- Usa window.scrollBy().
+- Desplaza aproximadamente el 80 por ciento de la altura visible.
+
+5.4. Navegacion
+
+Si click_element apunta a un enlace, agent.js lo identifica como navegacion.
+Antes de navegar:
+
+1. Guarda temporalmente la respuesta y el historial.
+2. Informa al service worker de la navegacion pendiente.
+3. La pagina nueva carga los scripts de contenido.
+4. El service worker devuelve la respuesta pendiente.
+5. La nueva pagina restaura sesion, historial y reproduccion.
+
+5.4.1. Navegacion mediante orientacion de cabeza
+
+vision.js recibe de sandbox/vision.js una clasificacion local basada en los
+landmarks faciales:
+
+- head_left: girar la cabeza a la izquierda.
+- head_right: girar la cabeza a la derecha.
+
+El gesto debe permanecer estable durante 5 segundos. voice.js ejecuta
+history.back() para head_left y history.forward() para head_right.
+
+La sesion guarda la URL inicial en sessionStorage. Si el usuario intenta
+retroceder desde esa URL, o el historial no tiene una pagina anterior, la
+accion se bloquea y Navi dice: "No puedo retroceder mas en esta sesion."
+Cuando no existe una pagina siguiente, Navi dice: "No puedo ir a la pagina
+siguiente."
+
+Cuando la navegacion tiene exito, se guarda una confirmacion temporal para que
+la pagina resultante la reproduzca despues de cargar. Esta funcionalidad usa
+el historial del navegador y no Playwright.
+
+5.5. Limites actuales
+
+- Solo se trabaja con elementos visibles descubiertos en el contexto.
+- Los IDs son temporales.
+- No existe un selector robusto basado en roles o texto como mecanismo
+  principal de ejecucion.
+- No hay soporte general para shadow DOM.
+- No hay soporte general para iframes externos.
+- No hay confirmacion automatica de que una aplicacion SPA acepto el cambio.
+- Las acciones irreversibles deben requerir confirmacion conversacional segun
+  el prompt del sistema, pero la implementacion debe seguir tratando los
+  controles de la pagina con precaucion.
+
+6. PAPEL REAL DE PLAYWRIGHT
+---------------------------
+
+Playwright no reemplaza actualmente la automatizacion de Navi. Se ejecuta
+separado con:
+
+    cd server
+    $env:NRVI_MONITOR_URL="https://ejemplo.test"
+    npm run monitor
+
+Su definicion correcta para la documentacion del proyecto es:
+
+"Playwright es una herramienta externa de monitoreo y diagnostico web que
+ejecuta validaciones pasivas en un navegador de prueba. No es el motor de
+automatizacion operativa de Navi ni controla el navegador del usuario."
+
+Si en el futuro se quisiera usar Playwright para acciones reales, habria que
+redisenar la arquitectura para conectar el backend con un navegador controlado
+por Playwright. Eso seria diferente del modelo actual, que actua sobre la
+pestana del usuario mediante content scripts.
+
+7. RESUMEN DE VERSIONES
+-----------------------
+
+- Extension NRVI: 0.2.0
+- Servidor NRVI: 0.1.0
+- Manifest V3
+- Chrome minimo: 116
+- Node validado: 22.12.0
+- Express instalado: 4.22.2
+- CORS instalado: 2.8.6
+- dotenv instalado: 16.6.1
+- multer instalado: 2.5.0
+- Playwright instalado: 1.65.0
+- Playwright declarado: ^1.56.1
+- face-api.js incluido: referencia 1.7.15
+- MediaPipe Hands: 0.4.1675469240, vendorizado localmente con sus recursos
+  `.data` y `.wasm`
+- Modelo Groq conversacional por defecto: openai/gpt-oss-20b
+- Modelo Groq STT por defecto: whisper-large-v3-turbo
+- Modelo Deepgram STT por defecto: nova-3
+- Modelo ElevenLabs por defecto: eleven_multilingual_v2
+
+8. TESTS Y VALIDACION
+---------------------
+
+El servidor tiene pruebas nativas con node:test en server/lib.test.js.
+La suite actual valida funciones de limpieza de modelo, filtrado de acciones
+y construccion de mensajes.
+
+El monitor Playwright se valido cargando example.com, registrando estado HTTP
+200 y finalizando despues del intervalo configurado.
+
+La automatizacion operativa de Navi y el monitor de Playwright son dos
+subsistemas separados:
+
+- Navi: interactua con la pagina del usuario.
+- Playwright: observa un navegador de prueba y registra diagnosticos.
