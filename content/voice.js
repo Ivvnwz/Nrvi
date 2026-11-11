@@ -25,7 +25,7 @@
   const STOP_PHRASES = ['deten la respuesta', 'para la respuesta', 'cancela la respuesta'];
   const INACTIVITY_TIMEOUT_MS = 180000;
   const FACE_ABSENCE_TIMEOUT_MS = 7000;
-  const FACE_REMINDER_DELAY_MS = 5000;
+  const FACE_REMINDER_DELAY_MS = 15000;
   const REQUEST_CAPTURE_TIMEOUT_MS = 9000;
   const MIN_RECORDING_DURATION_MS = 250;
   const MIN_AUDIO_BYTES = 1024;
@@ -35,6 +35,11 @@
   const FAREWELL = 'De acuerdo, hasta luego.';
   const FACE_ABSENCE_FAREWELL = 'Usuario ausente, terminando llamada.';
   const FACE_REMINDER = 'Usuario presente, diga Navi para activar el asistente.';
+  const NAVIGATION_START_KEY = 'nrvi-navigation-start-url';
+  const NAVIGATION_CONFIRMATION_KEY = 'nrvi-navigation-confirmation';
+  const logVoiceEvent = (event, details = {}) => {
+    console.info(`[NRVI] ${event}`, details);
+  };
 
   let recorder;
   let recorderGeneration = 0;
@@ -65,6 +70,7 @@
   let faceAbsenceTimer = null;
   let faceReminderTimer = null;
   let faceReminderShown = false;
+  let pageUnloading = false;
   let inCall = false;
   let processing = false;
   let speaking = false;
@@ -343,6 +349,8 @@
       speak(FACE_REMINDER, {
         allowInterruption: false,
         onend: () => {
+          faceReminderShown = false;
+          armFaceReminder();
           if (wakeListeningEnabled && !inCall && !speaking) startRecognition('wake');
         }
       });
@@ -354,7 +362,7 @@
     faceAbsenceTimer = setTimeout(() => {
       faceAbsenceTimer = null;
       if (facePresent || speaking || !inCall) return;
-      setCall(false, undefined, FACE_ABSENCE_FAREWELL);
+      setCall(false, undefined, FACE_ABSENCE_FAREWELL, 'face_absence_timeout');
     }, FACE_ABSENCE_TIMEOUT_MS);
   };
 
@@ -396,7 +404,7 @@
         faceAbsenceTimer = null;
         if (facePresent || !faceWasDetected) return;
         if (inCall) {
-          setCall(false, undefined, FACE_ABSENCE_FAREWELL);
+          setCall(false, undefined, FACE_ABSENCE_FAREWELL, 'face_absence_timeout');
           return;
         }
         if (!wakeWordPreferenceEnabled) return;
@@ -409,21 +417,97 @@
     }
   };
 
+  const announceNavigationConfirmation = () => {
+    let message = null;
+    try {
+      message = sessionStorage.getItem(NAVIGATION_CONFIRMATION_KEY);
+      sessionStorage.removeItem(NAVIGATION_CONFIRMATION_KEY);
+    } catch (error) {
+      console.warn('[NRVI] No se pudo leer la confirmación de navegación:', error.message);
+    }
+    if (message) {
+      logVoiceEvent('navigation.confirmation', { message });
+      setTimeout(() => speak(message), 700);
+    }
+  };
+
+  const navigateHistory = direction => {
+    if (!inCall) return;
+    logVoiceEvent('navigation.request', { direction, url: location.href });
+    const startUrl = sessionStorage.getItem(NAVIGATION_START_KEY);
+    if (direction === 'back' && startUrl && location.href === startUrl) {
+      logVoiceEvent('navigation.blocked', { direction, reason: 'session_start', url: location.href });
+      speak('No puedo retroceder más en esta sesión.');
+      return;
+    }
+
+    const confirmation = direction === 'back'
+      ? 'He vuelto a la página anterior.'
+      : 'He avanzado a la página siguiente.';
+    let settled = false;
+    const finish = moved => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      window.removeEventListener('popstate', onPopState);
+      if (!moved) speak(direction === 'back'
+        ? 'No puedo retroceder más en esta sesión.'
+        : 'No puedo ir a la página siguiente.');
+      logVoiceEvent('navigation.result', { direction, moved });
+    };
+    const onPopState = () => {
+      try {
+        sessionStorage.setItem(NAVIGATION_CONFIRMATION_KEY, confirmation);
+      } catch (error) {
+        console.warn('[NRVI] No se pudo guardar la confirmación de navegación:', error.message);
+      }
+      finish(true);
+      setTimeout(() => {
+        if (!pageUnloading) announceNavigationConfirmation();
+      }, 500);
+    };
+    const timeout = setTimeout(() => finish(false), 1500);
+    window.addEventListener('popstate', onPopState, { once: true });
+    history[direction]();
+  };
+
+  const interruptConversation = () => {
+    stopRecorder(true, false);
+    window.nrviCancel?.();
+    stopSpeaking();
+    processing = false;
+    sync();
+    restartRecognitionAfterInterruption();
+  };
+
+  const announceCurrentLocation = () => {
+    const context = typeof window.nrviContext === 'function' ? window.nrviContext() : {};
+    const title = String(context.title || document.title || '').trim();
+    const heading = Array.isArray(context.headings) ? String(context.headings[0] || '').trim() : '';
+    const locationLabel = title || heading || location.hostname || 'la página actual';
+    const detail = heading && heading !== locationLabel ? ` La sección principal es: ${heading}.` : '';
+    speak(`Estás en ${locationLabel}.${detail}`, {
+      onend: () => resumeRecognitionAfterSpeech()
+    });
+  };
+
   const setHandGesture = gesture => {
     if (!inCall) return;
+    logVoiceEvent('gesture.hand', { gesture, url: location.href });
     if (gesture === 'fist') {
+      interruptConversation();
+    } else if (gesture === 'thumbs_down') {
       pauseSpeaking();
-    } else if (gesture === 'open' && pausedState) {
+    } else if (gesture === 'thumbs_up' && pausedState) {
       resumeSpeaking();
-    } else if (gesture === 'thumbs_up' && !speaking) {
+    } else if (gesture === 'open' && !speaking) {
       replay();
-    } else if (gesture === 'victory') {
+    } else if (gesture === 'victory' && !speaking) {
       stopRecorder(true, false);
       window.nrviCancel?.();
-      stopSpeaking();
       processing = false;
-      sync();
-      restartRecognitionAfterInterruption();
+      logVoiceEvent('gesture.location_request', { title: document.title, url: location.href });
+      announceCurrentLocation();
     } else if (gesture === 'both_open') {
       stopRecorder(true, false);
       window.nrviCancel?.();
@@ -436,6 +520,10 @@
         console.warn('[NRVI] No se pudo guardar la confirmación de navegación:', error.message);
       }
       window.location.assign(new URL('/', window.location.href).href);
+    } else if (gesture === 'head_left') {
+      navigateHistory('back');
+    } else if (gesture === 'head_right') {
+      navigateHistory('forward');
     }
   };
 
@@ -448,7 +536,7 @@
         armInactivityTimer();
         return;
       }
-      endCall();
+      endCall(undefined, 'inactivity_timeout');
     }, INACTIVITY_TIMEOUT_MS);
   };
 
@@ -472,7 +560,7 @@
 
   const executeVoiceCommand = command => {
     if (!command) return false;
-    console.info('[NRVI] Comando local:', command);
+    logVoiceEvent('voice.command', { command, url: location.href });
     switch (command) {
       case 'stop':
         window.nrviCancel?.();
@@ -491,7 +579,7 @@
         replay({ slow: true });
         return true;
       case 'end_call':
-        endCall();
+        endCall(undefined, 'voice_command');
         return true;
       default:
         return false;
@@ -542,7 +630,11 @@
     const text = String(transcript || '').trim();
     if (!text) {
       processing = false;
-      if (inCall) endCall();
+      if (inCall) {
+        logVoiceEvent('transcript.empty', { reason: 'no_transcript' });
+        armInactivityTimer();
+        startRecognition('call');
+      }
       else if (wakeListeningEnabled) startRecognition('wake');
       else sync();
       return;
@@ -747,7 +839,13 @@
                 else resumeRecognitionAfterSpeech();
               }, 0);
             }
-          } else if (inCall && !processing) endCall();
+          } else if (inCall && !processing) {
+            logVoiceEvent('audio.empty', { mode: recordedMode, reason: 'no_speech_or_muted_microphone' });
+            armInactivityTimer();
+            setTimeout(() => {
+              if (inCall && !active && !processing && !speaking) startRecognition('call');
+            }, 0);
+          }
           else if (wakeListeningEnabled && !processing) startRecognition('wake');
           return;
         }
@@ -940,13 +1038,20 @@
     return true;
   };
 
-  const setCall = (enabled, initialQuestion, farewell = FAREWELL) => {
+  const setCall = (enabled, initialQuestion, farewell = FAREWELL, closeReason = 'manual_or_command') => {
     if (enabled) {
       if (inCall) {
         if (!active && !processing && !speaking) startRecognition('call');
         return true;
       }
       sessionId ||= `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      try {
+        if (!sessionStorage.getItem(NAVIGATION_START_KEY)) {
+          sessionStorage.setItem(NAVIGATION_START_KEY, location.href);
+        }
+      } catch (error) {
+        console.warn('[NRVI] No se pudo guardar la URL inicial de navegación:', error.message);
+      }
       wakeListeningEnabled = true;
       wakeWordEnabled = true;
       inCall = true;
@@ -974,6 +1079,7 @@
       return true;
     }
     const closingSessionId = sessionId;
+    logVoiceEvent('call.close', { reason: closeReason, farewell, facePresent, faceWasDetected });
     processing = false;
     if (inCall) {
       speak(farewell, {
@@ -995,17 +1101,30 @@
       chrome.runtime.sendMessage({ type: 'session.end', sessionId: closingSessionId }, () => void chrome.runtime.lastError);
     }
     sessionId = null;
+    try {
+      sessionStorage.removeItem(NAVIGATION_START_KEY);
+      sessionStorage.removeItem(NAVIGATION_CONFIRMATION_KEY);
+    } catch (error) {
+      console.warn('[NRVI] No se pudo limpiar el estado de navegación:', error.message);
+    }
     sync();
     return false;
   };
 
-  const endCall = farewell => {
-    setCall(false, undefined, farewell);
+  const endCall = (farewell, reason = 'command_or_inactivity') => {
+    setCall(false, undefined, farewell, reason);
   };
 
   const restoreSession = restoredSessionId => {
     if (!restoredSessionId) return false;
     sessionId = restoredSessionId;
+    try {
+      if (!sessionStorage.getItem(NAVIGATION_START_KEY)) {
+        sessionStorage.setItem(NAVIGATION_START_KEY, location.href);
+      }
+    } catch (error) {
+      console.warn('[NRVI] No se pudo restaurar la URL inicial de navegación:', error.message);
+    }
     wakeWordEnabled = true;
     wakeListeningEnabled = true;
     inCall = true;
@@ -1061,6 +1180,14 @@
   };
 
   restoreCallState();
+
+  window.addEventListener('pageshow', () => {
+    pageUnloading = false;
+    setTimeout(announceNavigationConfirmation, 500);
+  });
+  window.addEventListener('pagehide', () => {
+    pageUnloading = true;
+  });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'voice.getState') {
@@ -1141,5 +1268,6 @@
     if (homeConfirmation) {
       setTimeout(() => speak(homeConfirmation), 300);
     }
+    announceNavigationConfirmation();
   });
 })();

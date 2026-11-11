@@ -11,6 +11,7 @@ const groqTimeout = Number(process.env.GROQ_TIMEOUT_MS || 20000);
 const groqSttTimeout = Number(process.env.GROQ_STT_TIMEOUT_MS || 30000);
 const deepgramTimeout = Number(process.env.DEEPGRAM_STT_TIMEOUT_MS || 30000);
 const elevenTimeout = Number(process.env.ELEVENLABS_TIMEOUT_MS || 15000);
+const elevenModel = process.env.ELEVENLABS_MODEL || 'eleven_multilingual_v2';
 const sttModel = process.env.GROQ_STT_MODEL || 'whisper-large-v3-turbo';
 const deepgramModel = process.env.DEEPGRAM_STT_MODEL || 'nova-3';
 const maxCompletionTokens = Number(process.env.GROQ_MAX_COMPLETION_TOKENS || 700);
@@ -114,14 +115,20 @@ async function chat(messages, useTools = true, sessionId) {
     });
     throw new Error(errorMessage);
   }
+  const usage = data.usage && {
+    promptTokens: Number(data.usage.prompt_tokens || 0),
+    completionTokens: Number(data.usage.completion_tokens || 0),
+    totalTokens: Number(data.usage.total_tokens || 0)
+  };
   await writeLog('info', 'provider.response', {
     provider: 'groq',
     sessionId,
     status: response.status,
     hasToolCalls: Boolean(data.choices?.[0]?.message?.tool_calls),
-    responseLength: safeLogValue(data.choices?.[0]?.message?.content || '').length
+    responseLength: safeLogValue(data.choices?.[0]?.message?.content || '').length,
+    usage
   });
-  return data.choices?.[0]?.message || {};
+  return { message: data.choices?.[0]?.message || {}, usage };
 }
 
 async function elevenLabs(text, sessionId) {
@@ -134,32 +141,51 @@ async function elevenLabs(text, sessionId) {
     return null;
   }
   const voice = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
+  const characterCount = [...text].length;
   await writeLog('info', 'provider.request', {
     provider: 'elevenlabs',
     sessionId,
     voice,
-    textLength: text.length
+    model: elevenModel,
+    characterCount
   });
   try {
-    const response = await fetchWithTimeout(`https://api.elevenlabs.io/v1/text-to-speech/${voice}`, {
+    const response = await fetchWithTimeout(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voice)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'xi-api-key': process.env.ELEVENLABS_API_KEY, Accept: 'audio/mpeg' },
-      body: JSON.stringify({ text, model_id: 'eleven_multilingual_v2' })
+      body: JSON.stringify({ text, model_id: elevenModel })
     }, elevenTimeout);
     if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      const providerError = errorBody.detail?.message || errorBody.detail?.status || errorBody.message;
       await writeLog(response.status === 402 ? 'warn' : 'error', 'provider.response_error', {
         provider: 'elevenlabs',
         sessionId,
         status: response.status,
-        error: response.status === 402 ? 'Cuota o saldo de ElevenLabs agotado; se usará la voz del navegador.' : undefined
+        characterCount,
+        error: response.status === 402
+          ? 'Cuota o saldo de ElevenLabs agotado; se usará la voz del navegador.'
+          : providerError || 'ElevenLabs rechazó la solicitud; se usará la voz del navegador.'
       });
       return null;
     }
-    const audio = Buffer.from(await response.arrayBuffer()).toString('base64');
+    const audioBuffer = Buffer.from(await response.arrayBuffer());
+    if (!audioBuffer.length) {
+      await writeLog('error', 'provider.response_error', {
+        provider: 'elevenlabs',
+        sessionId,
+        status: response.status,
+        characterCount,
+        error: 'ElevenLabs devolvió audio vacío; se usará la voz del navegador.'
+      });
+      return null;
+    }
+    const audio = audioBuffer.toString('base64');
     await writeLog('info', 'provider.response', {
       provider: 'elevenlabs',
       sessionId,
       status: response.status,
+      characterCount,
       audioLength: audio.length
     });
     return audio;
@@ -362,7 +388,13 @@ app.post('/api/agent', async (request, response) => {
 
   try {
     const messages = buildMessages({ systemPrompt, history, context, question });
-    const first = await chat(messages, true, sessionId);
+    const firstResult = await chat(messages, true, sessionId);
+    const first = firstResult.message;
+    const tokenUsage = {
+      promptTokens: firstResult.usage?.promptTokens || 0,
+      completionTokens: firstResult.usage?.completionTokens || 0,
+      totalTokens: firstResult.usage?.totalTokens || 0
+    };
     let actions = [];
     let final = first;
 
@@ -370,7 +402,11 @@ app.post('/api/agent', async (request, response) => {
       actions = safeActions(first.tool_calls);
       messages.push(first);
       first.tool_calls.forEach(call => messages.push({ role: 'tool', tool_call_id: call.id, content: 'Acción preparada para ejecutarse en la página.' }));
-      final = await chat(messages, false, sessionId);
+      const finalResult = await chat(messages, false, sessionId);
+      final = finalResult.message;
+      tokenUsage.promptTokens += finalResult.usage?.promptTokens || 0;
+      tokenUsage.completionTokens += finalResult.usage?.completionTokens || 0;
+      tokenUsage.totalTokens += finalResult.usage?.totalTokens || 0;
     }
 
     const text = final.content?.trim() || 'He preparado la acción solicitada.';
@@ -381,14 +417,21 @@ app.post('/api/agent', async (request, response) => {
       status: 200,
       response: safeLogValue(text),
       actionCount: actions.length,
-      audioIncluded: Boolean(audioBase64)
+      audioIncluded: Boolean(audioBase64),
+      tokenUsage
     });
     void writeConversationLog('conversation.response', {
       sessionId,
       requestId,
       response: safeLogValue(text)
     });
-    response.json({ text, actions, audio: audioBase64, audioMimeType: audioBase64 ? 'audio/mpeg' : null });
+    response.json({
+      text,
+      actions,
+      audio: audioBase64,
+      audioMimeType: audioBase64 ? 'audio/mpeg' : null,
+      tokenUsage
+    });
   } catch (error) {
     console.error('NRVI agent error:', error.message);
     const isRateLimit = /rate limit|too many requests|TPM/i.test(error.message || '');

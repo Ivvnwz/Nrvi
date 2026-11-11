@@ -4,6 +4,8 @@
 
   const DETECTION_INTERVAL_MS = 250;
   const GESTURE_STABILITY_MS = 4000;
+  const FIST_STABILITY_MS = 5000;
+  const VICTORY_STABILITY_MS = 3000;
   let video;
   let canvas;
   let context;
@@ -208,11 +210,15 @@
         notify({ present: result.faces.length > 0, available: true });
         drawFaceMarkers({ size: () => result.faces.length, get: index => result.faces[index] });
         const hands = Array.isArray(result.hands) ? result.hands : (result.hand ? [result.hand] : []);
+        if (result.handError) {
+          console.warn('[NRVI] Detección de manos:', result.handError);
+        }
+        const headGesture = result.faces[0]?.headGesture || null;
         if (hands.length) {
           const bothPalms = hands.length === 2 && hands.every(hand => hand.gesture === 'open');
           const handGesture = bothPalms ? 'both_open' : hands[0].gesture;
           updateHandStatus({ points: hands.flatMap(hand => hand.points || []), gesture: handGesture });
-          updateGesture(handGesture);
+          updateGesture(handGesture || headGesture);
           if (landmarksVisible && markerContext) {
             hands.forEach(hand => hand.points.forEach(point => {
               markerContext.beginPath();
@@ -237,7 +243,7 @@
           }
         } else {
           updateHandStatus(null);
-          updateGesture(null);
+          updateGesture(headGesture);
         }
       } catch (error) {
         notify({ present: false, available: false, error: error.message });
@@ -320,8 +326,11 @@
       candidateSince = now;
       return;
     }
-    if (now - candidateSince < GESTURE_STABILITY_MS
-      || lastGesture === gesture && now - lastGestureAt < GESTURE_STABILITY_MS) return;
+    const stabilityMs = gesture === 'fist'
+      ? FIST_STABILITY_MS
+      : gesture === 'victory' ? VICTORY_STABILITY_MS : GESTURE_STABILITY_MS;
+    if (now - candidateSince < stabilityMs
+      || lastGesture === gesture && now - lastGestureAt < stabilityMs) return;
     lastGesture = gesture;
     lastGestureAt = now;
     notifyHand(gesture);

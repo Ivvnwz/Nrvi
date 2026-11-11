@@ -114,20 +114,24 @@ activar explícitamente la palabra `NAVI`, iniciar una llamada o pulsar
 **Mostrar cámara**. Ocultarla solo cambia su visibilidad y permite volver a
 mostrarla desde el popup.
 
-En standby, cuando el rostro permanece detectado durante 5 segundos, Navi
+En standby, cuando el rostro permanece detectado durante 15 segundos, Navi
 recuerda: «Usuario presente, diga Navi para activar el asistente». El aviso se
-emite una sola vez por cada periodo de presencia; vuelve a habilitarse cuando
-el rostro desaparece y luego se detecta nuevamente.
+repite cada 15 segundos mientras el usuario permanezca presente; se detiene
+cuando el rostro desaparece o comienza una llamada.
 
 Los marcadores faciales usan el modelo local de 68 puntos de `face-api.js`.
 Los marcadores de mano usan MediaPipe Hands local y muestran sus 21 puntos
 (incluidos los cinco dedos). Los gestos se clasifican localmente sobre esos
 puntos y requieren buena iluminación. Cada gesto debe mantenerse estable
-durante 4 segundos: puño pausa la respuesta, mano abierta reanuda una
+durante 5 segundos: puño pausa la respuesta, mano abierta reanuda una
 respuesta pausada, pulgar arriba repite la última respuesta y dos dedos
 extendidos interrumpen la respuesta o solicitud actual y devuelven a NAVI al
 modo de escucha. Dos palmas abiertas vuelven al inicio del sitio y reproducen
-una confirmación breve después de la navegación. Los gestos solo están
+una confirmación breve después de la navegación. Girar la cabeza a la
+izquierda vuelve a la página anterior y girarla a la derecha avanza a la
+siguiente. Navi bloquea volver cuando se encuentra en la URL inicial de la
+sesión y anuncia que no puede retroceder; si no existe una página siguiente,
+anuncia que no puede avanzar. Los gestos solo están
 habilitados durante una llamada activa; en standby esperando «NAVI» no
 ejecutan acciones. El pulgar abajo y las posturas ambiguas no ejecutan acciones.
 
@@ -163,6 +167,13 @@ consulta (`GROQ_MAX_COMPLETION_TOKENS`, valor predeterminado: 700). Si Groq
 responde con HTTP 429, NRVI informa el límite y evita nuevos envíos durante
 9 segundos.
 
+Cada respuesta de `/api/agent` incluye `tokenUsage` con los tokens de entrada,
+salida y total devueltos por Groq. Si se ejecutan herramientas se suman ambas
+llamadas al modelo. La transcripción de audio no se cuenta como tokens LLM y
+ElevenLabs se mide por caracteres enviados; ambos datos quedan en el log
+operativo para comparar coste y calidad sin confundir ruido, consultas o
+fallos de proveedor.
+
 ## Fases recomendadas
 
 1. Conversación textual con contexto semántico.
@@ -180,3 +191,25 @@ npm test
 ```
 
 Se ejecutan tests nativos (`node:test`) sobre funciones puras (`lib.js`).
+
+## Monitoreo con Playwright
+
+Playwright se usa únicamente como monitor pasivo en un navegador de prueba
+desde `server/playwright/monitor.js`.
+No reemplaza ni ejecuta las acciones de Navi (`click_element`, `fill_input`,
+`focus_field` o `scroll_page`) y no modifica los módulos de la extensión.
+Registra la carga de la página, errores de consola, errores JavaScript,
+solicitudes fallidas y respuestas HTTP con estado 400 o superior.
+
+Desde `server`, instala la dependencia y ejecuta el monitor con una URL
+explícita:
+
+```powershell
+npm install
+$env:NRVI_MONITOR_URL="https://ejemplo.test"
+npm run monitor
+```
+
+La monitorización dura 10 segundos por defecto. Se puede cambiar con
+`NRVI_MONITOR_DURATION_MS`. La herramienta se define como **monitor de
+calidad y diagnóstico web**, no como motor de automatización web de NRVI.
