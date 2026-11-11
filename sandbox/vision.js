@@ -1,7 +1,7 @@
 (() => {
   let cvReady;
   let handsReady;
-  let handResult;
+  let handResults = [];
   const frameCanvas = document.createElement('canvas');
   const frameContext = frameCanvas.getContext('2d', { willReadFrequently: true });
 
@@ -19,9 +19,9 @@
         const hands = new window.Hands({
           locateFile: file => new URL(`../vendor/mediapipe-hands/${file}`, window.location.href).href
         });
-        hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.55, minTrackingConfidence: 0.5 });
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 0, minDetectionConfidence: 0.55, minTrackingConfidence: 0.5 });
         hands.onResults(results => {
-          handResult = results.multiHandLandmarks?.[0] || null;
+          handResults = results.multiHandLandmarks || [];
         });
         handsReady = hands;
       } catch (error) {
@@ -85,7 +85,7 @@
       frameContext.putImageData(message.image, 0, 0);
       const detections = await window.faceapi.detectAllFaces(frameCanvas, options)
         .withFaceLandmarks(true);
-      handResult = null;
+      handResults = [];
       if (handsReady) {
         try {
           await handsReady.send({ image: frameCanvas });
@@ -110,7 +110,9 @@
       event.source.postMessage({
         type: 'vision.result',
         faces: result,
-        hand: detectHand(handResult, message.image.width, message.image.height)
+        hands: handResults
+          .map(landmarks => detectHand(landmarks, message.image.width, message.image.height))
+          .filter(Boolean)
       }, '*');
     } catch (error) {
       event.source.postMessage({ type: 'vision.error', error: error.message }, '*');

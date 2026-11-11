@@ -410,11 +410,12 @@
   };
 
   const setHandGesture = gesture => {
+    if (!inCall) return;
     if (gesture === 'fist') {
       pauseSpeaking();
     } else if (gesture === 'open' && pausedState) {
       resumeSpeaking();
-    } else if (gesture === 'thumbs_up') {
+    } else if (gesture === 'thumbs_up' && !speaking) {
       replay();
     } else if (gesture === 'victory') {
       stopRecorder(true, false);
@@ -423,6 +424,18 @@
       processing = false;
       sync();
       restartRecognitionAfterInterruption();
+    } else if (gesture === 'both_open') {
+      stopRecorder(true, false);
+      window.nrviCancel?.();
+      stopSpeaking();
+      processing = false;
+      sync();
+      try {
+        sessionStorage.setItem('nrvi-home-confirmation', 'He vuelto al inicio de la web.');
+      } catch (error) {
+        console.warn('[NRVI] No se pudo guardar la confirmación de navegación:', error.message);
+      }
+      window.location.assign(new URL('/', window.location.href).href);
     }
   };
 
@@ -1118,5 +1131,15 @@
   chrome.storage.local.get({ wakeWordEnabled: true }, settings => {
     wakeWordPreferenceEnabled = Boolean(settings.wakeWordEnabled);
     setWakeWord(Boolean(settings.wakeWordEnabled), Boolean(settings.wakeWordEnabled));
+    let homeConfirmation = null;
+    try {
+      homeConfirmation = sessionStorage.getItem('nrvi-home-confirmation');
+      sessionStorage.removeItem('nrvi-home-confirmation');
+    } catch (error) {
+      console.warn('[NRVI] No se pudo leer la confirmación de navegación:', error.message);
+    }
+    if (homeConfirmation) {
+      setTimeout(() => speak(homeConfirmation), 300);
+    }
   });
 })();

@@ -21,6 +21,7 @@
   let previewVisible = false;
   let landmarksVisible = false;
   let lastFacePresent = false;
+  let lastHandPresent = false;
   let sandbox;
   let sandboxReady;
 
@@ -29,7 +30,8 @@
     fist: 'puño',
     thumbs_up: 'pulgar arriba',
     thumbs_down: 'pulgar abajo',
-    victory: 'dos dedos'
+    victory: 'dos dedos',
+    both_open: 'ambas palmas'
   }[gesture] || gesture);
 
   const notify = detail => {
@@ -50,6 +52,16 @@
       detail: { gesture, stable: Boolean(gesture) }
     }));
     window.nrviVoice?.setHandGesture?.(gesture);
+  };
+
+  const updateHandStatus = hand => {
+    lastHandPresent = Boolean(hand?.points?.length);
+    if (!resultLabel) return;
+    const faceStatus = lastFacePresent ? 'Rostro detectado' : 'Rostro no detectado';
+    const handStatus = lastHandPresent
+      ? `Mano detectada${hand?.gesture ? `: ${gestureLabel(hand.gesture)}` : ''}`
+      : 'Mano no detectada';
+    resultLabel.textContent = `${faceStatus} | ${handStatus}`;
   };
 
   const stop = () => {
@@ -78,6 +90,7 @@
     lastGesture = null;
     lastGestureAt = 0;
     lastFacePresent = false;
+    lastHandPresent = false;
     lastGesture = null;
     notify({ present: false, available: true });
   };
@@ -194,29 +207,36 @@
         if (result.error) throw new Error(result.error);
         notify({ present: result.faces.length > 0, available: true });
         drawFaceMarkers({ size: () => result.faces.length, get: index => result.faces[index] });
-        if (result.hand?.gesture) {
-          updateGesture(result.hand.gesture);
+        const hands = Array.isArray(result.hands) ? result.hands : (result.hand ? [result.hand] : []);
+        if (hands.length) {
+          const bothPalms = hands.length === 2 && hands.every(hand => hand.gesture === 'open');
+          const handGesture = bothPalms ? 'both_open' : hands[0].gesture;
+          updateHandStatus({ points: hands.flatMap(hand => hand.points || []), gesture: handGesture });
+          updateGesture(handGesture);
           if (landmarksVisible && markerContext) {
-            result.hand.points.forEach(point => {
+            hands.forEach(hand => hand.points.forEach(point => {
               markerContext.beginPath();
               markerContext.arc(point.x, point.y, 2, 0, Math.PI * 2);
               markerContext.fillStyle = '#4ade80';
               markerContext.fill();
-            });
-            markerContext.strokeStyle = result.hand.gesture === 'open' || result.hand.gesture === 'victory'
+            }));
+            hands.forEach(hand => {
+            markerContext.strokeStyle = hand.gesture === 'open' || hand.gesture === 'victory'
               ? '#4ade80'
               : '#facc15';
             markerContext.lineWidth = 3;
-            markerContext.strokeRect(result.hand.x, result.hand.y, result.hand.width, result.hand.height);
+            markerContext.strokeRect(hand.x, hand.y, hand.width, hand.height);
             markerContext.fillStyle = markerContext.strokeStyle;
             markerContext.font = 'bold 14px system-ui';
             markerContext.fillText(
-              `Mano ${gestureLabel(result.hand.gesture)}`,
-              result.hand.x + 4,
-              Math.max(16, result.hand.y - 6)
+              hand.gesture ? `Mano ${gestureLabel(hand.gesture)}` : 'Mano detectada',
+              hand.x + 4,
+              Math.max(16, hand.y - 6)
             );
+            });
           }
         } else {
+          updateHandStatus(null);
           updateGesture(null);
         }
       } catch (error) {
@@ -406,6 +426,7 @@
       previewVisible,
       landmarksVisible,
       facePresent: lastFacePresent,
+      handPresent: lastHandPresent,
       gesture: lastGesture
     }),
     isRunning: () => running

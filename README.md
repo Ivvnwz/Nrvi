@@ -126,13 +126,16 @@ puntos y requieren buena iluminación. Cada gesto debe mantenerse estable
 durante 4 segundos: puño pausa la respuesta, mano abierta reanuda una
 respuesta pausada, pulgar arriba repite la última respuesta y dos dedos
 extendidos interrumpen la respuesta o solicitud actual y devuelven a NAVI al
-modo de escucha. El pulgar abajo y las posturas ambiguas no ejecutan acciones.
+modo de escucha. Dos palmas abiertas vuelven al inicio del sitio y reproducen
+una confirmación breve después de la navegación. Los gestos solo están
+habilitados durante una llamada activa; en standby esperando «NAVI» no
+ejecutan acciones. El pulgar abajo y las posturas ambiguas no ejecutan acciones.
 
 El popup incluye **Mostrar cámara** y **Mostrar marcadores**. La vista de
 cámara muestra el resultado actual de la detección; los marcadores dibujan el
-rectángulo y puntos de referencia del rostro y el área detectada de la mano.
-Los marcadores son una visualización de las detecciones de OpenCV, no un
-modelo de landmarks faciales de precisión.
+rectángulo y puntos de referencia del rostro y los 21 puntos de la mano.
+El texto de estado de la vista previa indica por separado si se detectaron
+rostro y mano, además del gesto clasificado cuando existe.
 
 Los comandos locales no se envían al modelo conversacional, pero primero deben
 transcribirse con Groq Whisper para que el navegador pueda identificarlos. Por
