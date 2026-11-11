@@ -26,6 +26,7 @@
   const INACTIVITY_TIMEOUT_MS = 180000;
   const FACE_ABSENCE_TIMEOUT_MS = 7000;
   const FACE_REMINDER_DELAY_MS = 5000;
+  const REQUEST_CAPTURE_TIMEOUT_MS = 9000;
   const MIN_RECORDING_DURATION_MS = 250;
   const MIN_AUDIO_BYTES = 1024;
   const AUDIO_FALLBACK_MIN_DURATION_MS = 800;
@@ -36,6 +37,7 @@
   const FACE_REMINDER = 'Usuario presente, diga Navi para activar el asistente.';
 
   let recorder;
+  let recorderGeneration = 0;
   let audioStream;
   let audioContext;
   let analyser;
@@ -412,6 +414,15 @@
       pauseSpeaking();
     } else if (gesture === 'open' && pausedState) {
       resumeSpeaking();
+    } else if (gesture === 'thumbs_up') {
+      replay();
+    } else if (gesture === 'victory') {
+      stopRecorder(true, false);
+      window.nrviCancel?.();
+      stopSpeaking();
+      processing = false;
+      sync();
+      restartRecognitionAfterInterruption();
     }
   };
 
@@ -452,6 +463,7 @@
     switch (command) {
       case 'stop':
         window.nrviCancel?.();
+        stopSpeaking();
         return true;
       case 'pause':
         pauseSpeaking();
@@ -644,6 +656,7 @@
       });
       const mimeType = recorderMimeType();
       const recorderInstance = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      const generation = ++recorderGeneration;
       recorderInstance.__mode = nextMode;
       recorder = recorderInstance;
       const recording = {
@@ -652,7 +665,8 @@
         startedAt: Date.now(),
         speechDetected: false,
         speechStartedAt: 0,
-        silenceStartedAt: 0
+        silenceStartedAt: 0,
+        maxDurationTimer: null
       };
       audioChunks = [];
       audioBytes = 0;
@@ -671,11 +685,19 @@
         }
       };
       recorderInstance.onstop = async () => {
+        const isCurrentRecorder = recorder === recorderInstance && generation === recorderGeneration;
+        if (recording.maxDurationTimer) {
+          clearTimeout(recording.maxDurationTimer);
+          recording.maxDurationTimer = null;
+        }
         const chunks = recording.chunks;
         const discard = recorderInstance?.__discard;
         const resumeAfterDiscard = recorderInstance?.__resumeAfterDiscard !== false;
         const recordedMode = recorderInstance?.__mode || nextMode;
         const recordingDuration = Date.now() - recording.startedAt;
+        const interruptionAudioDetected = recordedMode === 'interrupt'
+          && recording.bytes >= MIN_AUDIO_BYTES
+          && recordingDuration >= MIN_RECORDING_DURATION_MS;
         const fallbackSpeechDetected = recording.bytes >= AUDIO_FALLBACK_MIN_BYTES
           && recordingDuration >= AUDIO_FALLBACK_MIN_DURATION_MS;
         console.info('[NRVI] Audio grabado:', {
@@ -684,23 +706,24 @@
           rmsDetected: recording.speechDetected,
           fallbackDetected: fallbackSpeechDetected
         });
-        if (recorder === recorderInstance) recorder = null;
-        audioChunks = [];
         stream.getTracks().forEach(track => track.stop());
+        if (!isCurrentRecorder) return;
+        recorder = null;
+        audioChunks = [];
         audioStream = null;
         audioContext?.close();
         audioContext = null;
         analyser = null;
         analyserSink = null;
         stopMeter();
-        if (recorder === null) active = false;
+        active = false;
         processing = false;
         sync();
         const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
         if (
           !chunks.length
           || discard
-          || (!recording.speechDetected && !fallbackSpeechDetected)
+          || (!recording.speechDetected && !fallbackSpeechDetected && !interruptionAudioDetected)
           || recordingDuration < MIN_RECORDING_DURATION_MS
           || blob.size < MIN_AUDIO_BYTES
         ) {
@@ -734,9 +757,18 @@
       console.info('[NRVI] Grabación MediaRecorder iniciada:', mimeType || 'audio/webm');
       startMeter();
       sync();
+      recording.maxDurationTimer = setTimeout(() => {
+        if (recorder !== recorderInstance || generation !== recorderGeneration) return;
+        console.info('[NRVI] Límite de captura alcanzado:', REQUEST_CAPTURE_TIMEOUT_MS);
+        stopRecorder();
+      }, REQUEST_CAPTURE_TIMEOUT_MS);
       const data = new Float32Array(analyser.fftSize);
-      recorderMonitor = setInterval(() => {
-        if (!recorder || !analyser) return;
+      const monitor = setInterval(() => {
+        if (recorder !== recorderInstance || generation !== recorderGeneration || !analyser) {
+          clearInterval(monitor);
+          if (recorderMonitor === monitor) recorderMonitor = null;
+          return;
+        }
         analyser.getFloatTimeDomainData(data);
         const rms = Math.sqrt(data.reduce((sum, sample) => sum + sample * sample, 0) / data.length);
         bumpMic(Math.min(1, rms * 5));
@@ -777,10 +809,11 @@
           recording.silenceStartedAt ||= now;
         }
         if ((recording.speechDetected && recording.silenceStartedAt && now - recording.silenceStartedAt > 1200)
-          || (recording.speechStartedAt && now - recording.speechStartedAt > 15000)) {
+          || (recording.speechStartedAt && now - recording.speechStartedAt > REQUEST_CAPTURE_TIMEOUT_MS)) {
           stopRecorder();
         }
       }, 100);
+      recorderMonitor = monitor;
     }).catch(error => {
       recognitionStarting = false;
       console.error('[NRVI] No se pudo acceder al micrófono:', error);
@@ -1084,6 +1117,6 @@
 
   chrome.storage.local.get({ wakeWordEnabled: true }, settings => {
     wakeWordPreferenceEnabled = Boolean(settings.wakeWordEnabled);
-    setWakeWord(Boolean(settings.wakeWordEnabled), false);
+    setWakeWord(Boolean(settings.wakeWordEnabled), Boolean(settings.wakeWordEnabled));
   });
 })();

@@ -31,7 +31,7 @@ disponible, se usa la voz del navegador.
 
 La grabación se mantiene en memoria durante una frase, con detección local de
 silencio, cierre automático tras 3 minutos sin instrucciones y un límite de
-15 segundos por frase. El audio se envía al backend
+9 segundos por frase. El audio se envía al backend
 `/api/transcribe` y no se guarda en disco.
 
 Después carga la carpeta `Nrvi` como extensión descomprimida en `chrome://extensions`, recarga la extensión y las páginas que quieras probar.
@@ -121,8 +121,12 @@ el rostro desaparece y luego se detecta nuevamente.
 
 Los marcadores faciales usan el modelo local de 68 puntos de `face-api.js`.
 Los marcadores de mano usan MediaPipe Hands local y muestran sus 21 puntos
-(incluidos los cinco dedos). La clasificación de puño/mano abierta sigue
-siendo una regla local sobre esos puntos y requiere buena iluminación.
+(incluidos los cinco dedos). Los gestos se clasifican localmente sobre esos
+puntos y requieren buena iluminación. Cada gesto debe mantenerse estable
+durante 4 segundos: puño pausa la respuesta, mano abierta reanuda una
+respuesta pausada, pulgar arriba repite la última respuesta y dos dedos
+extendidos interrumpen la respuesta o solicitud actual y devuelven a NAVI al
+modo de escucha. El pulgar abajo y las posturas ambiguas no ejecutan acciones.
 
 El popup incluye **Mostrar cámara** y **Mostrar marcadores**. La vista de
 cámara muestra el resultado actual de la detección; los marcadores dibujan el
@@ -154,7 +158,7 @@ navegación controlada cuando Brave permite `chrome.action.openPopup()`.
 El backend limita la salida de Groq para reducir el consumo de tokens por
 consulta (`GROQ_MAX_COMPLETION_TOKENS`, valor predeterminado: 700). Si Groq
 responde con HTTP 429, NRVI informa el límite y evita nuevos envíos durante
-15 segundos.
+9 segundos.
 
 ## Fases recomendadas
 

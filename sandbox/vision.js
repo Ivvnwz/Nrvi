@@ -34,12 +34,20 @@
   const detectHand = (landmarks, width, height) => {
     if (!landmarks) return null;
     const points = landmarks.map(point => ({ x: point.x * width, y: point.y * height }));
-    const tips = [8, 12, 16, 20];
-    const pips = [6, 10, 14, 18];
-    const extended = tips.reduce((count, tip, index) => (
-      count + Number(points[tip].y < points[pips[index]].y)
-    ), 0);
-    const gesture = extended === 4 ? 'open' : extended === 0 ? 'fist' : null;
+    const fingerTips = [8, 12, 16, 20];
+    const fingerPips = [6, 10, 14, 18];
+    const extended = fingerTips.map((tip, index) => (
+      points[tip].y < points[fingerPips[index]].y
+    ));
+    const foldedCount = extended.filter(value => !value).length;
+    const thumbUp = points[4].y < points[3].y;
+    const thumbDown = points[4].y > points[3].y;
+    let gesture = null;
+    if (extended.every(Boolean)) gesture = 'open';
+    else if (foldedCount === 4 && thumbUp) gesture = 'thumbs_up';
+    else if (foldedCount === 4 && thumbDown) gesture = 'thumbs_down';
+    else if (extended[0] && extended[1] && !extended[2] && !extended[3]) gesture = 'victory';
+    else if (foldedCount === 4) gesture = 'fist';
     if (!gesture) return { points, gesture: null };
     const xs = points.map(point => point.x);
     const ys = points.map(point => point.y);

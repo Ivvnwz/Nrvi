@@ -3,6 +3,7 @@
   window.__nrviVisionLoaded = true;
 
   const DETECTION_INTERVAL_MS = 250;
+  const GESTURE_STABILITY_MS = 4000;
   let video;
   let canvas;
   let context;
@@ -23,6 +24,14 @@
   let sandbox;
   let sandboxReady;
 
+  const gestureLabel = gesture => ({
+    open: 'abierta',
+    fist: 'puño',
+    thumbs_up: 'pulgar arriba',
+    thumbs_down: 'pulgar abajo',
+    victory: 'dos dedos'
+  }[gesture] || gesture);
+
   const notify = detail => {
     lastFacePresent = Boolean(detail.present);
     if (resultLabel) {
@@ -36,7 +45,7 @@
 
   const notifyHand = gesture => {
     lastGesture = gesture;
-    if (resultLabel && gesture) resultLabel.textContent = `Rostro detectado | Mano: ${gesture === 'open' ? 'abierta' : 'puño'}`;
+    if (resultLabel && gesture) resultLabel.textContent = `Rostro detectado | Mano: ${gestureLabel(gesture)}`;
     window.dispatchEvent(new CustomEvent('nrvi:hand-gesture', {
       detail: { gesture, stable: Boolean(gesture) }
     }));
@@ -185,7 +194,7 @@
         if (result.error) throw new Error(result.error);
         notify({ present: result.faces.length > 0, available: true });
         drawFaceMarkers({ size: () => result.faces.length, get: index => result.faces[index] });
-        if (result.hand) {
+        if (result.hand?.gesture) {
           updateGesture(result.hand.gesture);
           if (landmarksVisible && markerContext) {
             result.hand.points.forEach(point => {
@@ -194,13 +203,15 @@
               markerContext.fillStyle = '#4ade80';
               markerContext.fill();
             });
-            markerContext.strokeStyle = result.hand.gesture === 'open' ? '#4ade80' : '#facc15';
+            markerContext.strokeStyle = result.hand.gesture === 'open' || result.hand.gesture === 'victory'
+              ? '#4ade80'
+              : '#facc15';
             markerContext.lineWidth = 3;
             markerContext.strokeRect(result.hand.x, result.hand.y, result.hand.width, result.hand.height);
             markerContext.fillStyle = markerContext.strokeStyle;
             markerContext.font = 'bold 14px system-ui';
             markerContext.fillText(
-              result.hand.gesture === 'open' ? 'Mano abierta' : 'Puño',
+              `Mano ${gestureLabel(result.hand.gesture)}`,
               result.hand.x + 4,
               Math.max(16, result.hand.y - 6)
             );
@@ -289,7 +300,8 @@
       candidateSince = now;
       return;
     }
-    if (now - candidateSince < 2000 || lastGesture === gesture && now - lastGestureAt < 2000) return;
+    if (now - candidateSince < GESTURE_STABILITY_MS
+      || lastGesture === gesture && now - lastGestureAt < GESTURE_STABILITY_MS) return;
     lastGesture = gesture;
     lastGestureAt = now;
     notifyHand(gesture);
@@ -362,6 +374,12 @@
       console.info('[NRVI] Detector facial local listo en sandbox.');
       notify({ present: false, available: true });
       detect();
+      const settings = await chrome.storage.local.get({
+        cameraPreviewVisible: false,
+        cameraLandmarksVisible: false
+      });
+      setLandmarks(Boolean(settings.cameraLandmarksVisible));
+      setPreview(Boolean(settings.cameraPreviewVisible));
       return true;
     } catch (error) {
       console.warn('[NRVI] No se pudo iniciar la detección facial:', error.message);
