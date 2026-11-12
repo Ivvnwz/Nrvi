@@ -24,6 +24,7 @@
   let landmarksVisible = false;
   let lastFacePresent = false;
   let lastHandPresent = false;
+  let lastSmile = false;
   let sandbox;
   let sandboxReady;
 
@@ -54,6 +55,11 @@
       detail: { gesture, stable: Boolean(gesture) }
     }));
     window.nrviVoice?.setHandGesture?.(gesture);
+  };
+
+  const notifySmile = smiling => {
+    lastSmile = smiling;
+    window.nrviVoice?.setSmileGesture?.(smiling);
   };
 
   const updateHandStatus = hand => {
@@ -93,6 +99,7 @@
     lastGestureAt = 0;
     lastFacePresent = false;
     lastHandPresent = false;
+    lastSmile = false;
     lastGesture = null;
     notify({ present: false, available: true });
   };
@@ -208,6 +215,7 @@
         });
         if (result.error) throw new Error(result.error);
         notify({ present: result.faces.length > 0, available: true });
+        notifySmile(Boolean(result.faces[0]?.smiling));
         drawFaceMarkers({ size: () => result.faces.length, get: index => result.faces[index] });
         const hands = Array.isArray(result.hands) ? result.hands : (result.hand ? [result.hand] : []);
         if (result.handError) {

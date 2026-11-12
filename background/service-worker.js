@@ -23,7 +23,7 @@ function describeError(error) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!['agent.request', 'transcription.request', 'session.end', 'navigation.prepare', 'navigation.consume'].includes(message.type)) return false;
+  if (!['agent.request', 'transcription.request', 'session.end', 'navigation.prepare', 'navigation.consume', 'page.close'].includes(message.type)) return false;
 
   (async () => {
     try {
@@ -55,6 +55,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       const backendUrl = await getBackendUrl();
+      if (message.type === 'page.close') {
+        const tabId = sender.tab?.id;
+        if (!tabId) throw new Error('No se pudo identificar la pestaña que se cerrará.');
+        await chrome.tabs.remove(tabId);
+        sendResponse({ ok: true });
+        return;
+      }
       if (message.type === 'session.end') {
         const response = await fetchWithTimeout(`${backendUrl}/api/session/end`, {
           method: 'POST',

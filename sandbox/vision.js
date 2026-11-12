@@ -98,6 +98,15 @@
     return null;
   };
 
+  const detectSmile = points => {
+    if (!Array.isArray(points) || points.length < 68) return false;
+    const faceWidth = Math.abs(points[16].x - points[0].x);
+    const mouthWidth = Math.abs(points[54].x - points[48].x);
+    const mouthCenterY = (points[51].y + points[57].y) / 2;
+    const cornersAboveCenter = points[48].y < mouthCenterY && points[54].y < mouthCenterY;
+    return faceWidth > 0 && mouthWidth / faceWidth > 0.3 && cornersAboveCenter;
+  };
+
   window.addEventListener('message', event => {
     const message = event.data;
     if (!message || message.type !== 'vision.init') return;
@@ -152,7 +161,8 @@
           points: positions
             .filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
             .map(point => ({ x: point.x, y: point.y })),
-          headGesture: detectHeadGesture(positions)
+          headGesture: detectHeadGesture(positions),
+          smiling: detectSmile(positions)
         };
       }).filter(face => face.width > 0 && face.height > 0);
       event.source.postMessage({

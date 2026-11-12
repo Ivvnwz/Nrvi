@@ -71,6 +71,11 @@
   let faceReminderTimer = null;
   let faceReminderShown = false;
   let pageUnloading = false;
+  let smileCandidateSince = 0;
+  let smileConfirmed = false;
+  let closingConfirmation = false;
+  let localConfirmationActive = false;
+  let localConfirmationResolver = null;
   let inCall = false;
   let processing = false;
   let speaking = false;
@@ -491,6 +496,115 @@
     });
   };
 
+  const confirmClosePage = () => {
+    if (closingConfirmation || speaking) return;
+    closingConfirmation = true;
+    localConfirmationActive = true;
+    stopRecorder(true, false);
+    window.nrviCancel?.();
+    active = false;
+    processing = false;
+    mode = 'off';
+    speak('¿Estás seguro de que quieres cerrar la página? Responde sí o no.', {
+      allowInterruption: false,
+      onend: () => {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+          closingConfirmation = false;
+          localConfirmationActive = false;
+          localConfirmationResolver = null;
+          processing = false;
+          active = false;
+          sync();
+          speak('No puedo confirmar el cierre por voz en este navegador.');
+          return;
+        }
+        const recognition = new SpeechRecognition();
+        let settled = false;
+        let confirmationTimer;
+        let recognitionRestartTimer;
+        const finishConfirmation = answer => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(confirmationTimer);
+          clearTimeout(recognitionRestartTimer);
+          recognition.abort?.();
+          localConfirmationResolver = null;
+          closingConfirmation = false;
+          localConfirmationActive = false;
+          processing = false;
+          active = false;
+          sync();
+          if (/\b(s[ií]|adelante|confirmo|cierra)\b/.test(answer)) {
+            logVoiceEvent('page.close.confirmed', { answer, url: location.href });
+            chrome.runtime.sendMessage({ type: 'page.close' }, () => void chrome.runtime.lastError);
+            return;
+          }
+          const message = /\b(no|cancela|cancelar)\b/.test(answer) ? 'Okey.' : 'Acción cancelada.';
+          speak(message, {
+            allowInterruption: false,
+            onend: () => setTimeout(() => resumeRecognitionAfterSpeech(), 2000)
+          });
+        };
+        localConfirmationResolver = finishConfirmation;
+        recognition.lang = 'es-ES';
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognition.onresult = event => {
+          const answer = normalize(event.results[0]?.[0]?.transcript);
+          finishConfirmation(answer);
+        };
+        recognition.onerror = event => {
+          if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+            finishConfirmation('');
+            return;
+          }
+          logVoiceEvent('page.close.confirmation_error', { error: event.error || 'unknown' });
+        };
+        recognition.onend = () => {
+          if (!settled) {
+            logVoiceEvent('page.close.confirmation_ended', { reason: 'recognizer_ended' });
+            recognitionRestartTimer = setTimeout(() => {
+              if (!settled) {
+                try {
+                  recognition.start();
+                } catch {
+                  logVoiceEvent('page.close.confirmation_restart_failed');
+                }
+              }
+            }, 100);
+          }
+        };
+        const startLocalConfirmation = () => {
+          if (settled) return;
+          try {
+            recognition.start();
+          } catch {
+            recognitionRestartTimer = setTimeout(startLocalConfirmation, 100);
+          }
+        };
+        setTimeout(startLocalConfirmation, 300);
+        confirmationTimer = setTimeout(() => finishConfirmation(''), 5000);
+      }
+    });
+  };
+
+  const setSmileGesture = smiling => {
+    if (!inCall || closingConfirmation) return;
+    const now = Date.now();
+    if (!smiling) {
+      smileCandidateSince = 0;
+      smileConfirmed = false;
+      return;
+    }
+    if (!smileCandidateSince) smileCandidateSince = now;
+    if (!smileConfirmed && now - smileCandidateSince >= 5000) {
+      smileConfirmed = true;
+      logVoiceEvent('gesture.smile', { url: location.href });
+      confirmClosePage();
+    }
+  };
+
   const setHandGesture = gesture => {
     if (!inCall) return;
     logVoiceEvent('gesture.hand', { gesture, url: location.href });
@@ -628,6 +742,12 @@
 
   const processTranscript = transcript => {
     const text = String(transcript || '').trim();
+    if (localConfirmationActive) {
+      if (!text) return;
+      logVoiceEvent('page.close.confirmation_transcript', { transcript: text });
+      localConfirmationResolver?.(normalize(text));
+      return;
+    }
     if (!text) {
       processing = false;
       if (inCall) {
@@ -839,7 +959,7 @@
                 else resumeRecognitionAfterSpeech();
               }, 0);
             }
-          } else if (inCall && !processing) {
+          } else if (inCall && !processing && !localConfirmationActive) {
             logVoiceEvent('audio.empty', { mode: recordedMode, reason: 'no_speech_or_muted_microphone' });
             armInactivityTimer();
             setTimeout(() => {
@@ -1169,6 +1289,7 @@
     armInactivityTimer,
     resumeRecognition: resumeRecognitionAfterSpeech,
     setFacePresence,
+    setSmileGesture,
     setHandGesture,
     isWakeWordEnabled: () => wakeListeningEnabled,
     isInCall: () => inCall,
