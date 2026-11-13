@@ -17,18 +17,22 @@ Las API keys nunca se guardan en la extensión. Van en `server/.env`.
 ```powershell
 cd server
 Copy-Item .env.example .env
-# Edita .env y agrega GROQ_API_KEY. ELEVENLABS_API_KEY es opcional.
+# Edita .env y agrega GROQ_API_KEY_1, GROQ_API_KEY_2 y GROQ_API_KEY_3.
+# ELEVENLABS_API_KEY es opcional.
 npm install
 npm start
 ```
 
 El reconocimiento de voz de NRVI usa `MediaRecorder` y transcribe cada frase mediante
 Groq Speech-to-Text (`whisper-large-v3-turbo`). Esto evita depender de
-`SpeechRecognition`, cuyo servicio puede estar bloqueado en Brave. La misma
-`GROQ_API_KEY` se utiliza para la transcripción y para las consultas del agente.
+`SpeechRecognition`, cuyo servicio puede estar bloqueado en Brave. La primera
+clave Groq se utiliza como fallback de transcripción y las claves configuradas
+se rotan para las consultas del agente.
 `ELEVENLABS_API_KEY` solo controla el audio de respuesta y es opcional; si no está
 disponible, se usa la voz del navegador.
 
+Las consultas conversacionales rotan las claves Groq configuradas en orden
+`GROQ_API_KEY_1`, `GROQ_API_KEY_2`, `GROQ_API_KEY_3` y vuelven a la primera.
 La grabación se mantiene en memoria durante una frase, con detección local de
 silencio, cierre automático tras 3 minutos sin instrucciones y un límite de
 9 segundos por frase. El audio se envía al backend
@@ -149,7 +153,7 @@ impedir reconocer `detente` o `finalizar`. Las variantes `finaliza`,
 localmente después de la transcripción.
 
 La transcripción usa Deepgram como proveedor principal (`DEEPGRAM_API_KEY`).
-Groq Whisper se conserva como fallback si Deepgram falla y `GROQ_API_KEY` está
+Groq Whisper se conserva como fallback si Deepgram falla y hay una clave Groq
 configurada. Groq continúa siendo el proveedor del modelo conversacional.
 
 Cuando una respuesta incluye un clic sobre un enlace, NRVI guarda la respuesta

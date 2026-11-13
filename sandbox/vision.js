@@ -1,7 +1,6 @@
 (() => {
   let cvReady;
   let handsReady;
-  let latestHandResults = [];
   let handDetectionError = null;
   let resolveHandFrame = null;
   const frameCanvas = document.createElement('canvas');
@@ -29,11 +28,11 @@
           selfieMode: false
         });
         hands.onResults(results => {
-          latestHandResults = Array.isArray(results.multiHandLandmarks)
+          const handResults = Array.isArray(results.multiHandLandmarks)
             ? results.multiHandLandmarks
             : [];
           handDetectionError = null;
-          resolveHandFrame?.(latestHandResults);
+          resolveHandFrame?.(handResults);
           resolveHandFrame = null;
         });
         await hands.initialize();
@@ -131,7 +130,7 @@
       frameContext.putImageData(message.image, 0, 0);
       const detections = await window.faceapi.detectAllFaces(frameCanvas, options)
         .withFaceLandmarks(true);
-      let handResults = latestHandResults;
+      let handResults = [];
       if (handsReady) {
         try {
           const handFrame = new Promise(resolve => {
@@ -140,13 +139,12 @@
           await handsReady.send({ image: frameCanvas });
           handResults = await Promise.race([
             handFrame,
-            new Promise(resolve => setTimeout(() => resolve(latestHandResults), 1000))
+            new Promise(resolve => setTimeout(() => resolve([]), 1000))
           ]);
           resolveHandFrame = null;
         } catch (error) {
           handDetectionError = error.message;
           console.warn('[NRVI] No se pudo procesar la mano:', error.message);
-          handsReady = null;
           resolveHandFrame = null;
         }
       }

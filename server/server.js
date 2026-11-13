@@ -15,6 +15,18 @@ const elevenModel = process.env.ELEVENLABS_MODEL || 'eleven_multilingual_v2';
 const sttModel = process.env.GROQ_STT_MODEL || 'whisper-large-v3-turbo';
 const deepgramModel = process.env.DEEPGRAM_STT_MODEL || 'nova-3';
 const maxCompletionTokens = Number(process.env.GROQ_MAX_COMPLETION_TOKENS || 700);
+const groqApiKeys = [
+  process.env.GROQ_API_KEY_1,
+  process.env.GROQ_API_KEY_2,
+  process.env.GROQ_API_KEY_3
+].map(key => key?.trim()).filter(Boolean);
+let groqApiKeyIndex = 0;
+const nextGroqApiKey = () => {
+  if (!groqApiKeys.length) return null;
+  const key = groqApiKeys[groqApiKeyIndex % groqApiKeys.length];
+  groqApiKeyIndex = (groqApiKeyIndex + 1) % groqApiKeys.length;
+  return key;
+};
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024, files: 1 }
@@ -66,12 +78,15 @@ No inventes controles. Para comprar, borrar, enviar formularios o acciones irrev
 
 async function chat(messages, useTools = true, sessionId) {
   const model = cleanModel(process.env.GROQ_MODEL || DEFAULT_MODEL);
+  const keySlot = groqApiKeys.length ? (groqApiKeyIndex % groqApiKeys.length) + 1 : null;
+  const apiKey = nextGroqApiKey();
   await writeLog('info', 'provider.request', {
     provider: 'groq',
     sessionId,
     model,
     useTools,
-    messageCount: messages.length
+    messageCount: messages.length,
+    keySlot
   });
 
   let response;
@@ -80,7 +95,7 @@ async function chat(messages, useTools = true, sessionId) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.GROQ_API_KEY?.trim()}`
+        Authorization: `Bearer ${apiKey}`
       },
       body: JSON.stringify({
         model,
@@ -202,7 +217,8 @@ async function elevenLabs(text, sessionId) {
 app.get('/health', (_request, response) => {
   const result = {
     ok: true,
-    groq: Boolean(process.env.GROQ_API_KEY),
+    groq: groqApiKeys.length > 0,
+    groqKeyCount: groqApiKeys.length,
     elevenlabs: Boolean(process.env.ELEVENLABS_API_KEY)
   };
   void writeLog('info', 'health.response', result);
@@ -238,8 +254,8 @@ const transcribeWithDeepgram = async file => {
 
 app.post('/api/transcribe', upload.single('file'), async (request, response) => {
   const sessionId = request.get('X-NRVI-Session') || undefined;
-  if (!process.env.DEEPGRAM_API_KEY && !process.env.GROQ_API_KEY) {
-    const error = 'Configura DEEPGRAM_API_KEY o GROQ_API_KEY en server/.env.';
+  if (!process.env.DEEPGRAM_API_KEY && !groqApiKeys.length) {
+    const error = 'Configura DEEPGRAM_API_KEY o una clave GROQ en server/.env.';
     void writeLog('error', 'transcription.response_error', { sessionId, status: 503, error });
     return response.status(503).json({ error });
   }
@@ -285,9 +301,9 @@ app.post('/api/transcribe', upload.single('file'), async (request, response) => 
         provider: 'deepgram',
         status: error.status || 502,
         error: error.message,
-        fallback: Boolean(process.env.GROQ_API_KEY)
+        fallback: groqApiKeys.length > 0
       });
-      if (!process.env.GROQ_API_KEY) {
+      if (!groqApiKeys.length) {
         return response.status(502).json({ error: 'No se pudo transcribir el audio con Deepgram.' });
       }
     }
@@ -310,7 +326,7 @@ app.post('/api/transcribe', upload.single('file'), async (request, response) => 
     form.append('response_format', 'json');
     const providerResponse = await fetchWithTimeout('https://api.groq.com/openai/v1/audio/transcriptions', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+      headers: { Authorization: `Bearer ${groqApiKeys[0]}` },
       body: form
     }, groqSttTimeout);
 
@@ -375,8 +391,8 @@ app.post('/api/agent', async (request, response) => {
     question: safeLogValue(question || '')
   });
 
-  if (!process.env.GROQ_API_KEY) {
-    const error = 'Configura GROQ_API_KEY en server/.env.';
+  if (!groqApiKeys.length) {
+    const error = 'Configura GROQ_API_KEY_1, GROQ_API_KEY_2 o GROQ_API_KEY_3 en server/.env.';
     void writeLog('error', 'agent.response_error', { requestId, sessionId, status: 503, error });
     return response.status(503).json({ error });
   }
@@ -400,13 +416,7 @@ app.post('/api/agent', async (request, response) => {
 
     if (first.tool_calls?.length) {
       actions = safeActions(first.tool_calls);
-      messages.push(first);
-      first.tool_calls.forEach(call => messages.push({ role: 'tool', tool_call_id: call.id, content: 'Acción preparada para ejecutarse en la página.' }));
-      const finalResult = await chat(messages, false, sessionId);
-      final = finalResult.message;
-      tokenUsage.promptTokens += finalResult.usage?.promptTokens || 0;
-      tokenUsage.completionTokens += finalResult.usage?.completionTokens || 0;
-      tokenUsage.totalTokens += finalResult.usage?.totalTokens || 0;
+      final = { content: 'He preparado la acción solicitada.' };
     }
 
     const text = final.content?.trim() || 'He preparado la acción solicitada.';

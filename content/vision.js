@@ -149,8 +149,10 @@
       if (!weightsResponse.ok) throw new Error(`No se pudieron cargar los pesos de ${manifestName} (${weightsResponse.status}).`);
       return { specs, data: await weightsResponse.arrayBuffer() };
     };
-    const detectorModel = await readModel('tiny_face_detector_model-weights_manifest.json');
-    const landmarkModel = await readModel('face_landmark_68_tiny_model-weights_manifest.json');
+    const [detectorModel, landmarkModel] = await Promise.all([
+      readModel('tiny_face_detector_model-weights_manifest.json'),
+      readModel('face_landmark_68_tiny_model-weights_manifest.json')
+    ]);
     sandbox = document.createElement('iframe');
     sandbox.src = chrome.runtime.getURL('sandbox/vision.html');
     sandbox.style.display = 'none';
