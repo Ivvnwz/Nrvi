@@ -76,6 +76,7 @@
   let closingConfirmation = false;
   let localConfirmationActive = false;
   let localConfirmationResolver = null;
+  let navigationAnnouncementScheduled = false;
   let inCall = false;
   let processing = false;
   let speaking = false;
@@ -422,17 +423,40 @@
     }
   };
 
-  const announceNavigationConfirmation = () => {
+  const announceNavigationConfirmation = (attempt = 0) => {
     let message = null;
     try {
       message = sessionStorage.getItem(NAVIGATION_CONFIRMATION_KEY);
-      sessionStorage.removeItem(NAVIGATION_CONFIRMATION_KEY);
     } catch (error) {
       console.warn('[NRVI] No se pudo leer la confirmación de navegación:', error.message);
     }
     if (message) {
-      logVoiceEvent('navigation.confirmation', { message });
-      setTimeout(() => speak(message), 700);
+      if (navigationAnnouncementScheduled) return;
+      if (speaking || !inCall) {
+        if (attempt < 20) setTimeout(() => announceNavigationConfirmation(attempt + 1), 250);
+        return;
+      }
+      navigationAnnouncementScheduled = true;
+      stopRecorder(true, false);
+      window.nrviCancel?.();
+      active = false;
+      processing = false;
+      const destination = String(document.title || '').trim();
+      const spokenMessage = destination ? `${message} Ahora estás en ${destination}.` : message;
+      logVoiceEvent('navigation.confirmation', { message: spokenMessage, url: location.href });
+      setTimeout(() => speak(spokenMessage, {
+        allowInterruption: false,
+        onend: () => {
+          try {
+            sessionStorage.removeItem(NAVIGATION_CONFIRMATION_KEY);
+          } catch (error) {
+            console.warn('[NRVI] No se pudo limpiar la confirmación de navegación:', error.message);
+          }
+          navigationAnnouncementScheduled = false;
+          armInactivityTimer();
+          resumeRecognitionAfterSpeech();
+        }
+      }), 100);
     }
   };
 
@@ -449,6 +473,17 @@
     const confirmation = direction === 'back'
       ? 'He vuelto a la página anterior.'
       : 'He avanzado a la página siguiente.';
+    stopRecorder(true, false);
+    window.nrviCancel?.();
+    stopSpeaking();
+    processing = false;
+    active = false;
+    sync();
+    try {
+      sessionStorage.removeItem(NAVIGATION_CONFIRMATION_KEY);
+    } catch (error) {
+      console.warn('[NRVI] No se pudo limpiar el aviso de navegación anterior:', error.message);
+    }
     let settled = false;
     const finish = moved => {
       if (settled) return;
@@ -461,19 +496,40 @@
       logVoiceEvent('navigation.result', { direction, moved });
     };
     const onPopState = () => {
-      try {
-        sessionStorage.setItem(NAVIGATION_CONFIRMATION_KEY, confirmation);
-      } catch (error) {
-        console.warn('[NRVI] No se pudo guardar la confirmación de navegación:', error.message);
-      }
       finish(true);
-      setTimeout(() => {
-        if (!pageUnloading) announceNavigationConfirmation();
-      }, 500);
+      if (!pageUnloading) {
+        chrome.runtime.sendMessage({ type: 'navigation.consume' }, () => {
+          if (chrome.runtime.lastError) return;
+          stopRecorder(true, false);
+          active = false;
+          processing = false;
+          speak(`${confirmation} Ahora estás en ${document.title || 'la página actual'}.`, {
+            allowInterruption: false,
+            onend: () => resumeRecognitionAfterSpeech()
+          });
+        });
+      }
     };
     const timeout = setTimeout(() => finish(false), 1500);
     window.addEventListener('popstate', onPopState, { once: true });
-    history[direction]();
+    chrome.runtime.sendMessage({
+      type: 'navigation.gesture.prepare',
+      sessionId,
+      response: { text: confirmation }
+    }, result => {
+      if (chrome.runtime.lastError || !result?.ok) {
+        logVoiceEvent('navigation.prepare_failed', {
+          direction,
+          error: chrome.runtime.lastError?.message || result?.error || 'unknown'
+        });
+        try {
+          sessionStorage.setItem(NAVIGATION_CONFIRMATION_KEY, confirmation);
+        } catch (error) {
+          console.warn('[NRVI] No se pudo guardar el aviso alternativo de navegación:', error.message);
+        }
+      }
+      history[direction]();
+    });
   };
 
   const interruptConversation = () => {
@@ -591,6 +647,11 @@
 
   const setSmileGesture = smiling => {
     if (!inCall || closingConfirmation) return;
+    if (active || processing || speaking || localConfirmationActive) {
+      smileCandidateSince = 0;
+      smileConfirmed = false;
+      return;
+    }
     const now = Date.now();
     if (!smiling) {
       smileCandidateSince = 0;

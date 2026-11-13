@@ -23,11 +23,11 @@ function describeError(error) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!['agent.request', 'transcription.request', 'session.end', 'navigation.prepare', 'navigation.consume', 'page.close'].includes(message.type)) return false;
+  if (!['agent.request', 'transcription.request', 'session.end', 'navigation.prepare', 'navigation.gesture.prepare', 'navigation.consume', 'page.close'].includes(message.type)) return false;
 
   (async () => {
     try {
-      if (message.type === 'navigation.prepare') {
+      if (message.type === 'navigation.prepare' || message.type === 'navigation.gesture.prepare') {
         const tabId = sender.tab?.id;
         if (!tabId || !message.sessionId) throw new Error('No se pudo asociar la navegación con la sesión.');
         await chrome.storage.session.set({
@@ -37,7 +37,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               text: message.response?.text || '',
               audioMimeType: message.response?.audioMimeType || null
             },
-            history: message.history || [],
+            history: Array.isArray(message.history) ? message.history : null,
             createdAt: Date.now()
           }
         });

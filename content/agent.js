@@ -117,9 +117,13 @@
         }
       }
       if (state.response) {
+        const destinationTitle = String(document.title || '').trim();
+        const responseText = destinationTitle
+          ? `${state.response.text} Ahora estás en ${destinationTitle}.`
+          : state.response.text;
         window.nrviVoice?.playResponse?.(
-          state.response.text,
-          state.response.audio,
+          responseText,
+          destinationTitle ? null : state.response.audio,
           state.response.audioMimeType,
           1,
           () => {
@@ -127,7 +131,7 @@
             window.nrviVoice?.resumeRecognition?.();
           }
         );
-        rememberExchange('', state.response.text);
+        rememberExchange('', responseText);
       } else {
         window.nrviVoice?.armInactivityTimer?.();
         window.nrviVoice?.resumeRecognition?.();
